@@ -68,8 +68,8 @@ class FLDownloader(BaseDownloader):
             )
 
         async with httpx.AsyncClient(proxies=httpx_proxy) as client:
-            response = await client.get(url, follow_redirects=True)
-            content_type = response.headers.get("Content-Type", timeout=10 * 60)
+            response = await client.get(url, follow_redirects=True, timeout=10 * 60)
+            content_type = response.headers.get("Content-Type")
 
             if response.status_code != 200:
                 raise NotSuccess(f'Status code is {response.status_code}!')
