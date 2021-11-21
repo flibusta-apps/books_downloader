@@ -21,6 +21,6 @@ async def download(source_id: int, remote_id: int, file_type: str):
     return Response(
         content,
         headers={
-            "Conten-Disposition": f"attachment; filename={filename}"
+            "Content-Disposition": f"attachment; filename={filename}"
         }
     )
