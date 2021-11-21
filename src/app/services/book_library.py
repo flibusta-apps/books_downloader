@@ -65,6 +65,6 @@ class BookLibraryClient:
 
     @classmethod
     async def get_remote_book(cls, source_id: int, book_id: int) -> Book:
-        data = await cls._make_request(f"{cls.BASE_URL}/api/v1/books/{source_id}/{book_id}")
+        data = await cls._make_request(f"{cls.BASE_URL}/api/v1/books/remote/{source_id}/{book_id}")
 
         return Book.parse_obj(data)
