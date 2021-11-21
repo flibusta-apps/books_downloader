@@ -86,7 +86,7 @@ class FLDownloader(BaseDownloader):
         tasks_ = tasks
 
         while tasks_:
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            done, pending = await asyncio.wait(tasks_, return_when=asyncio.FIRST_COMPLETED)
 
             for task in done:
                 try:
