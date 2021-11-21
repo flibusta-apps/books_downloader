@@ -192,6 +192,6 @@ class FLDownloader(BaseDownloader):
         return tasks[0].result()
 
     @classmethod
-    async def download(cls, book_id: int, file_type: str, source_id: int) -> tuple[bytes, str]:
-        downloader = cls(book_id, file_type, source_id)
+    async def download(cls, remote_id: int, file_type: str, source_id: int) -> tuple[bytes, str]:
+        downloader = cls(remote_id, file_type, source_id)
         return await downloader._download()
