@@ -29,11 +29,11 @@ class FLDownloader(BaseDownloader):
 
     @property
     def file_type(self):
-        return self.original_file_type.replace("+zip", "")
+        return self.original_file_type.replace("zip", "")
 
     @property
     def need_zip(self):
-        return "+zip" in self.original_file_type
+        return "zip" in self.original_file_type
 
     async def get_filename(self) -> str:
         if not self.get_book_data_task.done():
