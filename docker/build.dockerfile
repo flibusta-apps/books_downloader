@@ -4,8 +4,11 @@ FROM python:3.10-slim as build-image
 #     && apt-get install --no-install-recommends -y gcc build-essential python3-dev libpq-dev libffi-dev \
 #     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /
-COPY ./requirements.txt ./
+WORKDIR /root/poetry
+COPY pyproject.toml poetry.lock /root/poetry/
+
+RUN pip install poetry --no-cache-dir \
+    && poetry export --without-hashes > requirements.txt
 
 ENV VENV_PATH=/opt/venv
 RUN python -m venv $VENV_PATH \

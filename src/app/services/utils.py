@@ -1,7 +1,6 @@
+from concurrent.futures.process import ProcessPoolExecutor
 import io
 import zipfile
-
-from concurrent.futures.process import ProcessPoolExecutor
 
 import transliterate
 
@@ -23,10 +22,10 @@ def zip(filename, content):
     buffer = io.BytesIO()
     zip_file = zipfile.ZipFile(
         file=buffer,
-        mode='w',
+        mode="w",
         compression=zipfile.ZIP_DEFLATED,
         allowZip64=False,
-        compresslevel=9
+        compresslevel=9,
     )
     zip_file.writestr(filename, content)
 
@@ -60,29 +59,33 @@ def get_filename(book: Book, file_type: str) -> str:
 
     if book.authors:
         filename_parts.append(
-            '_'.join([get_short_name(a) for a in book.authors]) + '_-_'
+            "_".join([get_short_name(a) for a in book.authors]) + "_-_"
         )
 
     if book.title.startswith(" "):
-        filename_parts.append(
-            book.title[1:]
-        )
+        filename_parts.append(book.title[1:])
     else:
-        filename_parts.append(
-            book.title
-        )
+        filename_parts.append(book.title)
 
     filename = "".join(filename_parts)
 
-    if book.lang in ['ru']:
-        filename = transliterate.translit(filename, 'ru', reversed=True)
+    if book.lang in ["ru"]:
+        filename = transliterate.translit(filename, "ru", reversed=True)
 
     for c in "(),….’!\"?»«':":
-        filename = filename.replace(c, '')
+        filename = filename.replace(c, "")
 
-    for c, r in (('—', '-'), ('/', '_'), ('№', 'N'), (' ', '_'), ('–', '-'), ('á', 'a'), (' ', '_')):
+    for c, r in (
+        ("—", "-"),
+        ("/", "_"),
+        ("№", "N"),
+        (" ", "_"),
+        ("–", "-"),
+        ("á", "a"),
+        (" ", "_"),
+    ):
         filename = filename.replace(c, r)
 
-    right_part = f'.{book.id}.{file_type}'
+    right_part = f".{book.id}.{file_type}"
 
-    return filename[:64 - len(right_part)] + right_part
+    return filename[: 64 - len(right_part)] + right_part

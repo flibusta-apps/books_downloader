@@ -1,13 +1,12 @@
 from app.services.base import BaseDownloader
-from app.services.fl_downloader import FLDownloader
-
 from app.services.book_library import BookLibraryClient
+from app.services.fl_downloader import FLDownloader
 
 
 class DownloadersManager:
     SOURCES_TABLE: dict[int, str] = {}
     DOWNLOADERS_TABLE: dict[str, type[BaseDownloader]] = {
-        'flibusta': FLDownloader,
+        "flibusta": FLDownloader,
     }
 
     PREPARED = False

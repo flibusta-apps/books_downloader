@@ -1,9 +1,8 @@
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 
-from app.services.dowloaders_manager import DownloadersManager
-
 from app.depends import check_token
+from app.services.dowloaders_manager import DownloadersManager
 
 
 router = APIRouter(
@@ -19,8 +18,5 @@ async def download(source_id: int, remote_id: int, file_type: str):
     content, filename = await downloader.download(remote_id, file_type, source_id)
 
     return Response(
-        content,
-        headers={
-            "Content-Disposition": f"attachment; filename={filename}"
-        }
+        content, headers={"Content-Disposition": f"attachment; filename={filename}"}
     )

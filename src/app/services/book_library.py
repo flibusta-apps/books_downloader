@@ -1,15 +1,13 @@
+from datetime import date
 from typing import Generic, TypeVar
-import json
 
 import httpx
-
-from datetime import date
 from pydantic import BaseModel
 
 from core.config import env_config
 
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 class Page(BaseModel, Generic[T]):
@@ -47,7 +45,7 @@ class BookLibraryClient:
     @classmethod
     @property
     def auth_headers(cls):
-        return {'Authorization': cls.API_KEY}
+        return {"Authorization": cls.API_KEY}
 
     @classmethod
     async def _make_request(cls, url) -> dict:
@@ -65,6 +63,8 @@ class BookLibraryClient:
 
     @classmethod
     async def get_remote_book(cls, source_id: int, book_id: int) -> Book:
-        data = await cls._make_request(f"{cls.BASE_URL}/api/v1/books/remote/{source_id}/{book_id}")
+        data = await cls._make_request(
+            f"{cls.BASE_URL}/api/v1/books/remote/{source_id}/{book_id}"
+        )
 
         return Book.parse_obj(data)

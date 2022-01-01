@@ -1,5 +1,0 @@
-fastapi
-pydantic
-httpx
-transliterate
-uvicorn[standart]
