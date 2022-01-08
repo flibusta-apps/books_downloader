@@ -17,6 +17,10 @@ class ReceivedHTML(Exception):
     pass
 
 
+class ConvertationError(Exception):
+    pass
+
+
 class FLDownloader(BaseDownloader):
     def __init__(self, book_id: int, file_type: str, source_id: int):
         self.book_id = book_id
@@ -98,7 +102,7 @@ class FLDownloader(BaseDownloader):
                         p_task.cancel()
 
                     return data
-                except (NotSuccess, ReceivedHTML):
+                except (NotSuccess, ReceivedHTML, ConvertationError):
                     continue
 
             tasks_ = pending
@@ -133,7 +137,7 @@ class FLDownloader(BaseDownloader):
             )
 
             if response.status_code != 200:
-                raise ValueError
+                raise ConvertationError
 
         return content, False
 
