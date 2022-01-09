@@ -38,6 +38,10 @@ class Book(BaseModel):
     authors: list[BookAuthor]
 
 
+class BookDetail(Book):
+    remote_id: int
+
+
 class BookLibraryClient:
     API_KEY = env_config.BOOK_LIBRARY_API_KEY
     BASE_URL = env_config.BOOK_LIBRARY_URL
@@ -60,6 +64,12 @@ class BookLibraryClient:
         page = Page[Source].parse_obj(data)
 
         return [Source.parse_obj(item) for item in page.items]
+
+    @classmethod
+    async def get_book(cls, book_id: int) -> BookDetail:
+        data = await cls._make_request(f"{cls.BASE_URL}/api/v1/books/{book_id}")
+
+        return BookDetail.parse_obj(data)
 
     @classmethod
     async def get_remote_book(cls, source_id: int, book_id: int) -> Book:

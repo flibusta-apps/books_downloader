@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, Response
 
 from app.depends import check_token
+from app.services.book_library import BookLibraryClient
 from app.services.dowloaders_manager import DownloadersManager
+from app.services.utils import get_filename as _get_filename
 
 
 router = APIRouter(
@@ -20,3 +21,10 @@ async def download(source_id: int, remote_id: int, file_type: str):
     return Response(
         content, headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
+
+
+@router.get("/filename/{book_id}/{file_type}", response_model=str)
+async def get_filename(book_id: int, file_type: str):
+    book = await BookLibraryClient.get_book(book_id)
+
+    return _get_filename(book.remote_id, book, file_type)
