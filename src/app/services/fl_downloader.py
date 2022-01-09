@@ -44,7 +44,7 @@ class FLDownloader(BaseDownloader):
         if self.book is None:
             raise ValueError("Book is None!")
 
-        return get_filename(self.book, self.file_type)
+        return get_filename(self.book_id, self.book, self.file_type)
 
     async def get_final_filename(self) -> str:
         if self.need_zip:

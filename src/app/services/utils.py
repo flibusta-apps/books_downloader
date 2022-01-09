@@ -54,7 +54,7 @@ def get_short_name(author: BookAuthor) -> str:
     return " ".join(name_parts)
 
 
-def get_filename(book: Book, file_type: str) -> str:
+def get_filename(book_id: int, book: Book, file_type: str) -> str:
     filename_parts = []
 
     if book.authors:
@@ -86,6 +86,6 @@ def get_filename(book: Book, file_type: str) -> str:
     ):
         filename = filename.replace(c, r)
 
-    right_part = f".{book.id}.{file_type}"
+    right_part = f".{book_id}.{file_type}"
 
     return filename[: 64 - len(right_part)] + right_part
