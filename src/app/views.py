@@ -28,3 +28,8 @@ async def get_filename(book_id: int, file_type: str):
     book = await BookLibraryClient.get_book(book_id)
 
     return _get_filename(book.remote_id, book, file_type)
+
+
+@router.get("/healthcheck")
+async def healthcheck():
+    return "Ok!"
