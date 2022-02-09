@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Response, status
 
 from app.depends import check_token
 from app.services.book_library import BookLibraryClient
@@ -16,7 +16,12 @@ router = APIRouter(
 async def download(source_id: int, remote_id: int, file_type: str):
     downloader = await DownloadersManager.get_downloader(source_id)
 
-    content, filename = await downloader.download(remote_id, file_type, source_id)
+    result = await downloader.download(remote_id, file_type, source_id)
+
+    if result is None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    content, filename = result
 
     return Response(
         content, headers={"Content-Disposition": f"attachment; filename={filename}"}

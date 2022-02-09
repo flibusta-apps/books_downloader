@@ -146,7 +146,7 @@ class FLDownloader(BaseDownloader):
             self.source_id, self.book_id
         )
 
-    async def _get_content(self) -> tuple[bytes, str]:
+    async def _get_content(self) -> Optional[tuple[bytes, str]]:
         tasks = set()
 
         if self.file_type in ["epub", "mobi"]:
@@ -158,12 +158,12 @@ class FLDownloader(BaseDownloader):
         data = await self._wait_until_some_done(tasks)
 
         if data is None:
-            raise ValueError
+            return None
 
         content, is_zip = data
 
         if content is None or is_zip is None:
-            raise ValueError
+            return None
 
         if is_zip:
             content = await asyncio.get_event_loop().run_in_executor(
@@ -192,6 +192,6 @@ class FLDownloader(BaseDownloader):
     @classmethod
     async def download(
         cls, remote_id: int, file_type: str, source_id: int
-    ) -> tuple[bytes, str]:
+    ) -> Optional[tuple[bytes, str]]:
         downloader = cls(remote_id, file_type, source_id)
         return await downloader._download()
