@@ -35,6 +35,11 @@ async def get_filename(book_id: int, file_type: str):
     return _get_filename(book.remote_id, book, file_type)
 
 
-@router.get("/healthcheck")
+healthcheck_router = APIRouter(
+    tags=["healthcheck"]
+)
+
+
+@healthcheck_router.get("/healthcheck")
 async def healthcheck():
     return "Ok!"
