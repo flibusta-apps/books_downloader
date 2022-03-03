@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Response, status
+from fastapi.responses import StreamingResponse
 
 from app.depends import check_token
 from app.services.book_library import BookLibraryClient
@@ -23,7 +24,7 @@ async def download(source_id: int, remote_id: int, file_type: str):
 
     content, filename = result
 
-    return Response(
+    return StreamingResponse(
         content, headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
@@ -35,9 +36,7 @@ async def get_filename(book_id: int, file_type: str):
     return _get_filename(book.remote_id, book, file_type)
 
 
-healthcheck_router = APIRouter(
-    tags=["healthcheck"]
-)
+healthcheck_router = APIRouter(tags=["healthcheck"])
 
 
 @healthcheck_router.get("/healthcheck")

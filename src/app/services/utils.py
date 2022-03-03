@@ -1,5 +1,6 @@
 from concurrent.futures.process import ProcessPoolExecutor
-import io
+import re
+import tempfile
 import zipfile
 
 import transliterate
@@ -10,33 +11,49 @@ from app.services.book_library import Book, BookAuthor
 process_pool_executor = ProcessPoolExecutor(2)
 
 
-def unzip(file_bytes: bytes, file_type: str):
-    zip_file = zipfile.ZipFile(io.BytesIO(file_bytes))
+def unzip(temp_zipfile, file_type: str):
+    result = tempfile.NamedTemporaryFile(delete=False)
+
+    zip_file = zipfile.ZipFile(temp_zipfile)
     for name in zip_file.namelist():  # type: str
-        if file_type in name.lower():
-            return zip_file.read(name)
+        if file_type.lower() in name.lower():
+            with zip_file.open(name, "r") as internal_file:
+                while chunk := internal_file.read(2048):
+                    result.write(chunk)
+
+                result.seek(0)
+                return result.name
+
     raise FileNotFoundError
 
 
-def zip(filename, content):
-    buffer = io.BytesIO()
+def zip(
+    filename: str,
+    content_filename: str,
+) -> str:
+    result = tempfile.NamedTemporaryFile(delete=False)
+
     zip_file = zipfile.ZipFile(
-        file=buffer,
+        file=result,
         mode="w",
         compression=zipfile.ZIP_DEFLATED,
         allowZip64=False,
         compresslevel=9,
     )
-    zip_file.writestr(filename, content)
+
+    with open(content_filename, "rb") as content:
+        with zip_file.open(filename, "w") as internal_file:
+            while chunk := content.read(2048):
+                internal_file.write(chunk)
 
     for zfile in zip_file.filelist:
         zfile.create_system = 0
 
     zip_file.close()
 
-    buffer.seek(0)
+    result.close()
 
-    return buffer.read()
+    return result.name
 
 
 def get_short_name(author: BookAuthor) -> str:
@@ -71,8 +88,7 @@ def get_filename(book_id: int, book: Book, file_type: str) -> str:
 
     filename = "".join(filename_parts)
 
-    if book.lang in ["ru"]:
-        filename = transliterate.translit(filename, "ru", reversed=True)
+    filename = transliterate.translit(filename, reversed=True)
 
     for c in "(),….’!\"?»«':":
         filename = filename.replace(c, "")
@@ -85,9 +101,12 @@ def get_filename(book_id: int, book: Book, file_type: str) -> str:
         ("–", "-"),
         ("á", "a"),
         (" ", "_"),
+        ("'", ""),
     ):
         filename = filename.replace(c, r)
 
+    filename = re.sub(r"[^\x00-\x7f]", r"", filename)
+
     right_part = f".{book_id}.{file_type_}"
 
-    return filename[: 64 - len(right_part)] + right_part
+    return filename[: 64 - len(right_part) - 1] + right_part

@@ -1,9 +1,9 @@
-from typing import Protocol, Optional
+from typing import Protocol, Optional, AsyncIterator
 
 
 class BaseDownloader(Protocol):
     @classmethod
     async def download(
         cls, remote_id: int, file_type: str, source_id: int
-    ) -> Optional[tuple[bytes, str]]:
+    ) -> Optional[tuple[AsyncIterator[bytes], str]]:
         ...
