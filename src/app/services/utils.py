@@ -16,7 +16,7 @@ def unzip(temp_zipfile, file_type: str):
 
     zip_file = zipfile.ZipFile(temp_zipfile)
     for name in zip_file.namelist():  # type: str
-        if file_type.lower() in name.lower():
+        if file_type.lower() in name.lower() or name.lower() == "elector":
             with zip_file.open(name, "r") as internal_file:
                 while chunk := internal_file.read(2048):
                     result.write(chunk)
