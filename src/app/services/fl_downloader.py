@@ -26,6 +26,8 @@ class ConvertationError(Exception):
 
 
 class FLDownloader(BaseDownloader):
+    EXCLUDE_UNZIP = ["html"]
+
     def __init__(self, book_id: int, file_type: str, source_id: int):
         self.book_id = book_id
         self.original_file_type = file_type
@@ -52,8 +54,8 @@ class FLDownloader(BaseDownloader):
 
         return get_filename(self.book_id, book, self.file_type)
 
-    async def get_final_filename(self) -> str:
-        if self.need_zip:
+    async def get_final_filename(self, force_zip: bool = False) -> str:
+        if self.need_zip or force_zip:
             return (await self.get_filename()) + ".zip"
 
         return await self.get_filename()
@@ -238,7 +240,7 @@ class FLDownloader(BaseDownloader):
         for source in env_config.FL_SOURCES:
             tasks.add(asyncio.create_task(self._download_from_source(source)))
 
-        if self.file_type in ["epub", "mobi"]:
+        if self.file_type.lower() in ["epub", "mobi"]:
             tasks.add(asyncio.create_task(self._download_with_converting()))
 
         data = await self._wait_until_some_done(tasks)
@@ -249,7 +251,7 @@ class FLDownloader(BaseDownloader):
         client, response, is_zip = data
 
         try:
-            if is_zip:
+            if is_zip and self.file_type.lower() not in self.EXCLUDE_UNZIP:
                 temp_file_name = await self._unzip(response)
             else:
 
@@ -271,8 +273,10 @@ class FLDownloader(BaseDownloader):
 
         content = cast(IO, open(content_filename, "rb"))
 
+        force_zip = is_zip and self.file_type.lower() in self.EXCLUDE_UNZIP
+
         async def _content_iterator() -> AsyncIterator[bytes]:
-            t_file = UploadFile(await self.get_filename(), content)
+            t_file = UploadFile(await self.get_final_filename(force_zip), content)
             try:
                 while chunk := await t_file.read(2048):
                     yield cast(bytes, chunk)
@@ -283,7 +287,7 @@ class FLDownloader(BaseDownloader):
                         process_pool_executor, os.remove, content_filename
                     )
 
-        return _content_iterator(), await self.get_final_filename()
+        return _content_iterator(), await self.get_final_filename(force_zip)
 
     async def _get_book_data(self):
         return await BookLibraryClient.get_remote_book(self.source_id, self.book_id)
