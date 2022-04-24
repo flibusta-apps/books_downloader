@@ -148,8 +148,10 @@ class FLDownloader(BaseDownloader):
         await temp_file.seek(0)
 
     async def _unzip(self, response: httpx.Response) -> Optional[str]:
-        async with asynctempfile.NamedTemporaryFile(delete=False) as temp_file:
+        async with asynctempfile.NamedTemporaryFile(delete=True) as temp_file:
             await self._write_response_content_to_ntf(temp_file, response)
+
+            await temp_file.flush()
 
             return await asyncio.get_event_loop().run_in_executor(
                 process_pool_executor, unzip, temp_file.name, "fb2"
