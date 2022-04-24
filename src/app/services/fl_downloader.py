@@ -153,9 +153,12 @@ class FLDownloader(BaseDownloader):
 
             await temp_file.flush()
 
-            return await asyncio.get_event_loop().run_in_executor(
-                process_pool_executor, unzip, temp_file.name, "fb2"
-            )
+            try:
+                return await asyncio.get_event_loop().run_in_executor(
+                    process_pool_executor, unzip, temp_file.name, "fb2"
+                )
+            except FileNotFoundError:
+                return None
 
     async def _download_with_converting(
         self,
@@ -184,6 +187,9 @@ class FLDownloader(BaseDownloader):
         finally:
             await response.aclose()
             await client.aclose()
+
+        if filename_to_convert is None:
+            raise ValueError
 
         form = {"format": self.file_type}
         files = {"file": open(filename_to_convert, "rb")}
@@ -240,6 +246,9 @@ class FLDownloader(BaseDownloader):
         finally:
             await response.aclose()
             await client.aclose()
+
+        if temp_filename is None:
+            return None
 
         if self.need_zip:
             content_filename = await asyncio.get_event_loop().run_in_executor(
