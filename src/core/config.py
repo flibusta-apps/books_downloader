@@ -18,5 +18,7 @@ class EnvConfig(BaseSettings):
 
     CONVERTER_URL: str
 
+    SENTRY_DSN: str
+
 
 env_config = EnvConfig()
