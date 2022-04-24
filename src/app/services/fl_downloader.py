@@ -1,28 +1,16 @@
 import asyncio
-import os
-import tempfile
-from typing import IO, Optional, AsyncIterator, cast
+from typing import Optional, AsyncIterator, cast
 
-from fastapi import UploadFile
-
+import aiofiles
+import aiofiles.os
+import asynctempfile
 import httpx
 
 from app.services.base import BaseDownloader
 from app.services.book_library import BookLibraryClient
+from app.services.exceptions import NotSuccess, ReceivedHTML, ConvertationError
 from app.services.utils import zip, unzip, get_filename, process_pool_executor
 from core.config import env_config, SourceConfig
-
-
-class NotSuccess(Exception):
-    pass
-
-
-class ReceivedHTML(Exception):
-    pass
-
-
-class ConvertationError(Exception):
-    pass
 
 
 class FLDownloader(BaseDownloader):
@@ -120,7 +108,7 @@ class FLDownloader(BaseDownloader):
 
                 await data[0].aclose()
                 await data[1].aclose()
-            except (NotSuccess, ReceivedHTML, ConvertationError):
+            except (NotSuccess, ReceivedHTML, ConvertationError, FileNotFoundError):
                 continue
 
     async def _wait_until_some_done(
@@ -145,34 +133,27 @@ class FLDownloader(BaseDownloader):
                     )
 
                     return data
-                except (NotSuccess, ReceivedHTML, ConvertationError):
+                except (NotSuccess, ReceivedHTML, ConvertationError, FileNotFoundError):
                     continue
 
             tasks_ = pending
 
         return None
 
-    async def _write_response_content_to_ntf(self, ntf, response: httpx.Response):
-        temp_file = UploadFile(await self.get_filename(), ntf)
-
+    async def _write_response_content_to_ntf(self, temp_file, response: httpx.Response):
         async for chunk in response.aiter_bytes(2048):
             await temp_file.write(chunk)
 
-        temp_file.file.flush()
-
+        await temp_file.flush()
         await temp_file.seek(0)
 
-        return temp_file.file
+    async def _unzip(self, response: httpx.Response) -> Optional[str]:
+        async with asynctempfile.NamedTemporaryFile(delete=False) as temp_file:
+            await self._write_response_content_to_ntf(temp_file, response)
 
-    async def _unzip(self, response: httpx.Response):
-        with tempfile.NamedTemporaryFile() as ntf:
-            await self._write_response_content_to_ntf(ntf, response)
-
-            internal_tempfile_name = await asyncio.get_event_loop().run_in_executor(
-                process_pool_executor, unzip, ntf.name, "fb2"
+            return await asyncio.get_event_loop().run_in_executor(
+                process_pool_executor, unzip, temp_file.name, "fb2"
             )
-
-        return internal_tempfile_name
 
     async def _download_with_converting(
         self,
@@ -191,26 +172,25 @@ class FLDownloader(BaseDownloader):
 
         client, response, is_zip = data
 
-        is_temp_file = False
         try:
             if is_zip:
-                file_to_convert_name = await self._unzip(response)
+                filename_to_convert = await self._unzip(response)
             else:
-                file_to_convert = tempfile.NamedTemporaryFile()
-                await self._write_response_content_to_ntf(file_to_convert, response)
-                file_to_convert_name = file_to_convert.name
-                is_temp_file = True
+                async with asynctempfile.NamedTemporaryFile(delete=False) as temp_file:
+                    await self._write_response_content_to_ntf(temp_file, response)
+                    filename_to_convert = temp_file.name
         finally:
             await response.aclose()
             await client.aclose()
 
         form = {"format": self.file_type}
-        files = {"file": open(file_to_convert_name, "rb")}
+        files = {"file": open(filename_to_convert, "rb")}
 
         converter_client = httpx.AsyncClient(timeout=2 * 60)
         converter_request = converter_client.build_request(
             "POST", env_config.CONVERTER_URL, data=form, files=files
         )
+
         try:
             converter_response = await converter_client.send(
                 converter_request, stream=True
@@ -219,19 +199,17 @@ class FLDownloader(BaseDownloader):
             await converter_client.aclose()
             raise
         finally:
-            if is_temp_file:
-                await asyncio.get_event_loop().run_in_executor(
-                    process_pool_executor, os.remove, file_to_convert_name
-                )
-
-        if response.status_code != 200:
-            raise ConvertationError
+            await aiofiles.os.remove(filename_to_convert)
 
         try:
+            if response.status_code != 200:
+                raise ConvertationError
+
             return converter_client, converter_response, False
         except asyncio.CancelledError:
             await converter_response.aclose()
             await converter_client.aclose()
+            await aiofiles.os.remove(filename_to_convert)
             raise
 
     async def _get_content(self) -> Optional[tuple[AsyncIterator[bytes], str]]:
@@ -252,40 +230,32 @@ class FLDownloader(BaseDownloader):
 
         try:
             if is_zip and self.file_type.lower() not in self.EXCLUDE_UNZIP:
-                temp_file_name = await self._unzip(response)
+                temp_filename = await self._unzip(response)
             else:
-
-                temp_file = tempfile.NamedTemporaryFile()
-                await self._write_response_content_to_ntf(temp_file, response)
-                temp_file_name = temp_file.name
+                async with asynctempfile.NamedTemporaryFile() as temp_file:
+                    temp_filename = temp_file.name
+                    await self._write_response_content_to_ntf(temp_file, response)
         finally:
             await response.aclose()
             await client.aclose()
 
-        is_unziped_temp_file = False
         if self.need_zip:
             content_filename = await asyncio.get_event_loop().run_in_executor(
-                process_pool_executor, zip, await self.get_filename(), temp_file_name
+                process_pool_executor, zip, await self.get_filename(), temp_filename
             )
-            is_unziped_temp_file = True
+            await aiofiles.os.remove(temp_filename)
         else:
-            content_filename = temp_file_name
-
-        content = cast(IO, open(content_filename, "rb"))
+            content_filename = temp_filename
 
         force_zip = is_zip and self.file_type.lower() in self.EXCLUDE_UNZIP
 
         async def _content_iterator() -> AsyncIterator[bytes]:
-            t_file = UploadFile(await self.get_final_filename(force_zip), content)
             try:
-                while chunk := await t_file.read(2048):
-                    yield cast(bytes, chunk)
+                async with aiofiles.open(content_filename) as temp_file:
+                    while chunk := await temp_file.read(2048):
+                        yield cast(bytes, chunk)
             finally:
-                await t_file.close()
-                if is_unziped_temp_file:
-                    await asyncio.get_event_loop().run_in_executor(
-                        process_pool_executor, os.remove, content_filename
-                    )
+                await aiofiles.os.remove(content_filename)
 
         return _content_iterator(), await self.get_final_filename(force_zip)
 
