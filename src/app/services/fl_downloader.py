@@ -201,7 +201,7 @@ class FLDownloader(BaseDownloader):
         form = {"format": self.file_type}
         files = {"file": open(filename_to_convert, "rb")}
 
-        converter_client = httpx.AsyncClient(timeout=2 * 60)
+        converter_client = httpx.AsyncClient(timeout=5 * 60)
         converter_request = converter_client.build_request(
             "POST", env_config.CONVERTER_URL, data=form, files=files
         )
@@ -210,6 +210,9 @@ class FLDownloader(BaseDownloader):
             converter_response = await converter_client.send(
                 converter_request, stream=True
             )
+        except httpx.ReadTimeout:
+            await converter_client.aclose()
+            raise ConvertationError()
         except asyncio.CancelledError:
             await converter_client.aclose()
             raise
