@@ -1,5 +1,6 @@
 import asyncio
 from typing import Optional, AsyncIterator, cast
+import zipfile
 
 import aiofiles
 import aiofiles.os
@@ -133,7 +134,13 @@ class FLDownloader(BaseDownloader):
                     )
 
                     return data
-                except (NotSuccess, ReceivedHTML, ConvertationError, FileNotFoundError):
+                except (
+                    NotSuccess,
+                    ReceivedHTML,
+                    ConvertationError,
+                    FileNotFoundError,
+                    ValueError,
+                ):
                     continue
 
             tasks_ = pending
@@ -157,7 +164,7 @@ class FLDownloader(BaseDownloader):
                 return await asyncio.get_event_loop().run_in_executor(
                     process_pool_executor, unzip, temp_file.name, "fb2"
                 )
-            except FileNotFoundError:
+            except (FileNotFoundError, zipfile.BadZipFile):
                 return None
 
     async def _download_with_converting(

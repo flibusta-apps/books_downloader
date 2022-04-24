@@ -22,9 +22,10 @@ def remove_temp_file(filename: str) -> bool:
 
 
 def unzip(temp_zipfile: str, file_type: str) -> Optional[str]:
+    zip_file = zipfile.ZipFile(temp_zipfile)
+
     result = tempfile.NamedTemporaryFile(delete=False)
 
-    zip_file = zipfile.ZipFile(temp_zipfile)
     for name in zip_file.namelist():  # type: str
         if file_type.lower() in name.lower() or name.lower() == "elector":
             with zip_file.open(name, "r") as internal_file:
