@@ -1,6 +1,8 @@
 from concurrent.futures.process import ProcessPoolExecutor
+import os
 import re
 import tempfile
+from typing import Optional
 import zipfile
 
 import transliterate
@@ -11,7 +13,15 @@ from app.services.book_library import Book, BookAuthor
 process_pool_executor = ProcessPoolExecutor(2)
 
 
-def unzip(temp_zipfile, file_type: str):
+def remove_temp_file(filename: str) -> bool:
+    try:
+        os.remove(filename)
+        return True
+    except OSError:
+        return False
+
+
+def unzip(temp_zipfile: str, file_type: str) -> Optional[str]:
     result = tempfile.NamedTemporaryFile(delete=False)
 
     zip_file = zipfile.ZipFile(temp_zipfile)
@@ -23,6 +33,9 @@ def unzip(temp_zipfile, file_type: str):
 
                 result.seek(0)
                 return result.name
+
+    result.close()
+    remove_temp_file(result.name)
 
     raise FileNotFoundError
 
@@ -50,7 +63,6 @@ def zip(
         zfile.create_system = 0
 
     zip_file.close()
-
     result.close()
 
     return result.name
