@@ -90,7 +90,7 @@ class FLDownloader(BaseDownloader):
 
             return client, response, "application/zip" in content_type
         except (asyncio.CancelledError, NotSuccess, ReceivedHTML):
-            await client.aclose()
+            await response.aclose()
             await client.aclose()
             raise
 
