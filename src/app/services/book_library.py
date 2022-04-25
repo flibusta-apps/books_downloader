@@ -54,8 +54,7 @@ class BookLibraryClient:
     @classmethod
     async def _make_request(cls, url) -> dict:
         async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.get(url, headers=cls.auth_headers)
-            return response.json()
+            return (await client.get(url, headers=cls.auth_headers)).json()
 
     @classmethod
     async def get_sources(cls) -> list[Source]:
