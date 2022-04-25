@@ -83,17 +83,13 @@ class FLDownloader(BaseDownloader):
             content_type = response.headers.get("Content-Type")
 
             if response.status_code != 200:
-                await response.aclose()
-                await client.aclose()
                 raise NotSuccess(f"Status code is {response.status_code}!")
 
             if "text/html" in content_type:
-                await response.aclose()
-                await client.aclose()
                 raise ReceivedHTML()
 
             return client, response, "application/zip" in content_type
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, NotSuccess, ReceivedHTML):
             await client.aclose()
             await client.aclose()
             raise
@@ -224,7 +220,7 @@ class FLDownloader(BaseDownloader):
                 raise ConvertationError
 
             return converter_client, converter_response, False
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, ConvertationError):
             await converter_response.aclose()
             await converter_client.aclose()
             await aiofiles.os.remove(filename_to_convert)
