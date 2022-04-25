@@ -6,6 +6,7 @@ from typing import Optional
 import zipfile
 
 import transliterate
+import transliterate.exceptions
 
 from app.services.book_library import Book, BookAuthor
 
@@ -101,7 +102,10 @@ def get_filename(book_id: int, book: Book, file_type: str) -> str:
 
     filename = "".join(filename_parts)
 
-    filename = transliterate.translit(filename, reversed=True)
+    try:
+        filename = transliterate.translit(filename, reversed=True)
+    except transliterate.exceptions.LanguageDetectionError:
+        pass
 
     for c in "(),….’!\"?»«':":
         filename = filename.replace(c, "")
