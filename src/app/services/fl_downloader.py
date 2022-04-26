@@ -105,7 +105,13 @@ class FLDownloader(BaseDownloader):
 
                 await data[0].aclose()
                 await data[1].aclose()
-            except (NotSuccess, ReceivedHTML, ConvertationError, FileNotFoundError):
+            except (
+                NotSuccess,
+                ReceivedHTML,
+                ConvertationError,
+                FileNotFoundError,
+                ValueError,
+            ):
                 continue
 
     async def _wait_until_some_done(
@@ -122,8 +128,9 @@ class FLDownloader(BaseDownloader):
                 try:
                     data = task.result()
 
-                    for p_task in pending:
-                        p_task.cancel()
+                    await self._close_other_done(
+                        {ttask for ttask in pending if not ttask.cancel()}
+                    )
 
                     await self._close_other_done(
                         {ttask for ttask in done if ttask != task}
