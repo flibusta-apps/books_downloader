@@ -7,7 +7,7 @@ authors = ["Kurbanov Bulat <kurbanovbul@gmail.com>"]
 [tool.poetry.dependencies]
 python = "^3.9"
 fastapi = ">=0.77.1"
-httpx = "^0.22.0"
+httpx = ">=0.23.0"
 transliterate = "^1.10.2"
 uvicorn = {extras = ["standart"], version = "^0.17.6"}
 prometheus-fastapi-instrumentator = "^5.8.1"
