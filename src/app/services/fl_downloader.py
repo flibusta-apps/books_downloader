@@ -253,7 +253,7 @@ class FLDownloader(BaseDownloader):
             if is_zip and self.file_type.lower() not in self.EXCLUDE_UNZIP:
                 temp_filename = await self._unzip(response)
             else:
-                async with asynctempfile.NamedTemporaryFile() as temp_file:
+                async with asynctempfile.NamedTemporaryFile(delete=False) as temp_file:
                     temp_filename = temp_file.name
                     await self._write_response_content_to_ntf(temp_file, response)
         finally:
