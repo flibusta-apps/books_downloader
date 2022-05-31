@@ -275,7 +275,7 @@ class FLDownloader(BaseDownloader):
 
         async def _content_iterator() -> AsyncIterator[bytes]:
             try:
-                async with aiofiles.open(content_filename) as temp_file:
+                async with aiofiles.open(content_filename, "rb") as temp_file:
                     while chunk := await temp_file.read(2048):
                         yield cast(bytes, chunk)
             finally:
