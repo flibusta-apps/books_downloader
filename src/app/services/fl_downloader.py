@@ -75,15 +75,15 @@ class FLDownloader(BaseDownloader):
         )
         try:
             response = await client.send(request, stream=True)
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, httpx.ReadError, httpx.ConnectError) as e:
             await client.aclose()
-            raise
+            raise NotSuccess(str(e))
 
         try:
-            content_type = response.headers.get("Content-Type")
-
             if response.status_code != 200:
                 raise NotSuccess(f"Status code is {response.status_code}!")
+
+            content_type = response.headers.get("Content-Type")
 
             if "text/html" in content_type:
                 raise ReceivedHTML()
@@ -128,10 +128,13 @@ class FLDownloader(BaseDownloader):
                 try:
                     data = task.result()
 
-                    await self._close_other_done(
-                        {ttask for ttask in pending if not ttask.cancel()}
-                    )
+                    for t_task in pending:
+                        if not t_task.done() or t_task.cancelled():
+                            continue
 
+                        t_task.cancel()
+
+                    await self._close_other_done(pending)
                     await self._close_other_done(
                         {ttask for ttask in done if ttask != task}
                     )
@@ -213,12 +216,9 @@ class FLDownloader(BaseDownloader):
             converter_response = await converter_client.send(
                 converter_request, stream=True
             )
-        except httpx.ReadTimeout:
+        except (httpx.ConnectError, httpx.ReadTimeout, asyncio.CancelledError):
             await converter_client.aclose()
-            raise ConvertationError()
-        except asyncio.CancelledError:
-            await converter_client.aclose()
-            raise
+            raise ConvertationError
         finally:
             await aiofiles.os.remove(filename_to_convert)
 
