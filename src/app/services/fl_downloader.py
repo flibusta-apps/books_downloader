@@ -101,7 +101,7 @@ class FLDownloader(BaseDownloader):
     ):
         for task in done_tasks:
             try:
-                data = task.result()
+                data = await task
 
                 await data[0].aclose()
                 await data[1].aclose()
@@ -129,9 +129,6 @@ class FLDownloader(BaseDownloader):
                     data = task.result()
 
                     for t_task in pending:
-                        if not t_task.done() or t_task.cancelled():
-                            continue
-
                         t_task.cancel()
 
                     await self._close_other_done(pending)
