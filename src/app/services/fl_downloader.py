@@ -111,6 +111,7 @@ class FLDownloader(BaseDownloader):
                 ConvertationError,
                 FileNotFoundError,
                 ValueError,
+                asyncio.InvalidStateError,
             ):
                 continue
 
