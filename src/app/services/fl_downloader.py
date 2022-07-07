@@ -222,8 +222,9 @@ class FLDownloader(BaseDownloader):
             await aiofiles.os.remove(filename_to_convert)
 
         try:
+            content = open(filename_to_convert, "rb").read()
+            print(f"{content=}", flush=True)
             print(f"{response.status_code=} {filename_to_convert=}", flush=True)
-            print("content=", open(filename_to_convert, "r").read(), flush=True)
 
             if response.status_code != 200:
                 raise ConvertationError
