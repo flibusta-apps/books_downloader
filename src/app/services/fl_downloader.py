@@ -225,6 +225,8 @@ class FLDownloader(BaseDownloader):
             if response.status_code != 200:
                 raise ConvertationError
 
+            print(response.status_code, filename_to_convert)
+
             return converter_client, converter_response, False
         except (asyncio.CancelledError, ConvertationError):
             await converter_response.aclose()
