@@ -75,7 +75,7 @@ class FLDownloader(BaseDownloader):
         )
         try:
             response = await client.send(request, stream=True)
-        except (asyncio.CancelledError, httpx.ReadError, httpx.ConnectError) as e:
+        except (asyncio.CancelledError, httpx.HTTPError) as e:
             await client.aclose()
             raise NotSuccess(str(e))
 
