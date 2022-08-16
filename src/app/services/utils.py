@@ -1,3 +1,4 @@
+import asyncio
 from concurrent.futures.process import ProcessPoolExecutor
 import os
 import re
@@ -27,7 +28,7 @@ def unzip(temp_zipfile: str, file_type: str) -> Optional[str]:
 
     result = tempfile.NamedTemporaryFile(delete=False)
 
-    for name in zip_file.namelist():  # type: str
+    for name in zip_file.namelist():
         if file_type.lower() in name.lower() or name.lower() == "elector":
             with zip_file.open(name, "r") as internal_file:
                 while chunk := internal_file.read(2048):
@@ -127,3 +128,27 @@ def get_filename(book_id: int, book: Book, file_type: str) -> str:
     right_part = f".{book_id}.{file_type_}"
 
     return filename[: 64 - len(right_part) - 1] + right_part
+
+
+def async_retry(*exceptions: type[Exception], times: int = 1, delay: float = 1.0):
+    """
+    :param times: retry count
+    :param delay: delay time
+    :param default_content: set default content
+    :return
+    """
+
+    def func_wrapper(f):
+        async def wrapper(*args, **kwargs):
+            for retry in range(times):
+                try:
+                    return await f(*args, **kwargs)
+                except exceptions as e:
+                    if retry + 1 == times:
+                        raise e
+
+                await asyncio.sleep(delay)
+
+        return wrapper
+
+    return func_wrapper

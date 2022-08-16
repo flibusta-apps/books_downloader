@@ -10,7 +10,13 @@ import httpx
 from app.services.base import BaseDownloader
 from app.services.book_library import BookLibraryClient
 from app.services.exceptions import NotSuccess, ReceivedHTML, ConvertationError
-from app.services.utils import zip, unzip, get_filename, process_pool_executor
+from app.services.utils import (
+    zip,
+    unzip,
+    get_filename,
+    process_pool_executor,
+    async_retry,
+)
 from core.config import env_config, SourceConfig
 
 
@@ -49,6 +55,7 @@ class FLDownloader(BaseDownloader):
 
         return await self.get_filename()
 
+    @async_retry(httpx.ReadTimeout, times=5, delay=10)
     async def _download_from_source(
         self, source_config: SourceConfig, file_type: Optional[str] = None
     ) -> tuple[httpx.AsyncClient, httpx.Response, bool]:
@@ -62,7 +69,10 @@ class FLDownloader(BaseDownloader):
         else:
             url = basic_url + f"/b/{self.book_id}/download"
 
-        client_kwargs = {"timeout": 10 * 60, "follow_redirects": True}
+        client_kwargs = {
+            "timeout": httpx.Timeout(10 * 60, connect=15, read=60),
+            "follow_redirects": True,
+        }
 
         if proxy is not None:
             client = httpx.AsyncClient(proxies=httpx.Proxy(url=proxy), **client_kwargs)
@@ -84,8 +94,13 @@ class FLDownloader(BaseDownloader):
                 raise NotSuccess(f"Status code is {response.status_code}!")
 
             content_type = response.headers.get("Content-Type")
+            content_disposition = response.headers.get("Content-Disposition", "")
 
-            if "text/html" in content_type:
+            if (
+                "text/html" in content_type
+                and self.file_type.lower() != "html"
+                and "html" not in content_disposition.lower()
+            ):
                 raise ReceivedHTML()
 
             return client, response, "application/zip" in content_type
@@ -159,15 +174,18 @@ class FLDownloader(BaseDownloader):
         await temp_file.flush()
         await temp_file.seek(0)
 
-    async def _unzip(self, response: httpx.Response) -> Optional[str]:
+    async def _unzip(self, response: httpx.Response, file_type: str) -> Optional[str]:
         async with asynctempfile.NamedTemporaryFile(delete=True) as temp_file:
-            await self._write_response_content_to_ntf(temp_file, response)
+            try:
+                await self._write_response_content_to_ntf(temp_file, response)
+            except httpx.HTTPError:
+                return None
 
             await temp_file.flush()
 
             try:
                 return await asyncio.get_event_loop().run_in_executor(
-                    process_pool_executor, unzip, temp_file.name, "fb2"
+                    process_pool_executor, unzip, temp_file.name, file_type
                 )
             except (FileNotFoundError, zipfile.BadZipFile):
                 return None
@@ -191,7 +209,7 @@ class FLDownloader(BaseDownloader):
 
         try:
             if is_zip:
-                filename_to_convert = await self._unzip(response)
+                filename_to_convert = await self._unzip(response, "fb2")
             else:
                 async with asynctempfile.NamedTemporaryFile(delete=False) as temp_file:
                     await self._write_response_content_to_ntf(temp_file, response)
@@ -225,8 +243,6 @@ class FLDownloader(BaseDownloader):
             if response.status_code != 200:
                 raise ConvertationError
 
-            print(response.status_code, filename_to_convert)
-
             return converter_client, converter_response, False
         except (asyncio.CancelledError, ConvertationError):
             await converter_response.aclose()
@@ -252,7 +268,7 @@ class FLDownloader(BaseDownloader):
 
         try:
             if is_zip and self.file_type.lower() not in self.EXCLUDE_UNZIP:
-                temp_filename = await self._unzip(response)
+                temp_filename = await self._unzip(response, self.file_type)
             else:
                 async with asynctempfile.NamedTemporaryFile(delete=False) as temp_file:
                     temp_filename = temp_file.name

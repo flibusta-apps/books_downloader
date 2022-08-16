@@ -6,7 +6,7 @@ authors = ["Kurbanov Bulat <kurbanovbul@gmail.com>"]
 
 [tool.poetry.dependencies]
 python = "^3.9"
-fastapi = ">=0.78.0"
+fastapi = ">=0.79.0"
 httpx = ">=0.23.0"
 transliterate = "^1.10.2"
 uvicorn = {version = ">=0.18.2", extras = ["standart"]}
@@ -36,7 +36,8 @@ exclude = '''
 [tool.flake8]
 ignore = [
     # Whitespace before ':' ( https://www.flake8rules.com/rules/E203.html )
-    "E203"
+    "E203",
+    "W503"
 ]
 max-line-length=88
 max-complexity = 15
