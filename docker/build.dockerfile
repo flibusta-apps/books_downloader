@@ -1,4 +1,4 @@
-FROM ghcr.io/kurbezz/base_docker_images:3.10-poetry-buildtime as build-image
+FROM ghcr.io/flibusta-apps/base_docker_images:3.10-poetry-buildtime as build-image
 
 WORKDIR /root/poetry
 COPY pyproject.toml poetry.lock /root/poetry/
@@ -10,7 +10,7 @@ RUN poetry export --without-hashes > requirements.txt \
     && pip install -r requirements.txt --no-cache-dir
 
 
-FROM python:3.10-slim as runtime-image
+FROM python:3.11-slim as runtime-image
 
 ENV VENV_PATH=/opt/venv
 ENV PATH="$VENV_PATH/bin:$PATH"
