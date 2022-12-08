@@ -55,7 +55,7 @@ class FLDownloader(BaseDownloader):
 
         return await self.get_filename()
 
-    @async_retry(httpx.ReadTimeout, times=5, delay=10)
+    @async_retry(NotSuccess, times=5, delay=10)
     async def _download_from_source(
         self, source_config: SourceConfig, file_type: Optional[str] = None
     ) -> tuple[httpx.AsyncClient, httpx.Response, bool]:
@@ -104,10 +104,14 @@ class FLDownloader(BaseDownloader):
                 raise ReceivedHTML()
 
             return client, response, "application/zip" in content_type
-        except (asyncio.CancelledError, NotSuccess, ReceivedHTML):
+        except (asyncio.CancelledError, httpx.HTTPError, NotSuccess, ReceivedHTML) as e:
             await response.aclose()
             await client.aclose()
-            raise
+
+            if isinstance(e, httpx.HTTPError):
+                raise NotSuccess(str(e))
+            else:
+                raise e
 
     @classmethod
     async def _close_other_done(
@@ -154,13 +158,7 @@ class FLDownloader(BaseDownloader):
                     )
 
                     return data
-                except (
-                    NotSuccess,
-                    ReceivedHTML,
-                    ConvertationError,
-                    FileNotFoundError,
-                    ValueError,
-                ):
+                except *:
                     continue
 
             tasks_ = pending
