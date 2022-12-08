@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Generic, TypeVar
+from typing import Generic, TypeVar, Optional
 
 import httpx
 from pydantic import BaseModel
@@ -46,6 +46,8 @@ class BookLibraryClient:
     API_KEY = env_config.BOOK_LIBRARY_API_KEY
     BASE_URL = env_config.BOOK_LIBRARY_URL
 
+    _sources_cache: Optional[list[Source]] = None
+
     @classmethod
     @property
     def auth_headers(cls):
@@ -58,11 +60,16 @@ class BookLibraryClient:
 
     @classmethod
     async def get_sources(cls) -> list[Source]:
+        if cls._sources_cache:
+            return cls._sources_cache
+
         data = await cls._make_request(f"{cls.BASE_URL}/api/v1/sources")
 
         page = Page[Source].parse_obj(data)
 
-        return [Source.parse_obj(item) for item in page.items]
+        sources = [Source.parse_obj(item) for item in page.items]
+        cls._sources_cache = sources
+        return sources
 
     @classmethod
     async def get_book(cls, book_id: int) -> BookDetail:
