@@ -158,7 +158,7 @@ class FLDownloader(BaseDownloader):
                     )
 
                     return data
-                except *:
+                except:
                     continue
 
             tasks_ = pending
