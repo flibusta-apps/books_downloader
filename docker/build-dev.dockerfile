@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY . .
 
-RUN cargo build --release --bin books_downloader
+RUN cargo build --bin books_downloader
 
 
 FROM debian:bullseye-slim
@@ -17,5 +17,5 @@ RUN update-ca-certificates
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/books_downloader /usr/local/bin
+COPY --from=builder /app/target/debug/books_downloader /usr/local/bin
 ENTRYPOINT ["/usr/local/bin/books_downloader"]
