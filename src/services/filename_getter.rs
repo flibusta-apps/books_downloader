@@ -34,18 +34,21 @@ pub fn get_filename_by_book(book: &BookWithRemote, file_type: &str, force_zip: b
         file_type.to_string()
     };
 
-    filename_parts.push(
-        book.authors
-            .clone()
-            .into_iter()
-            .map(|author| get_author_short_name(author))
-            .collect::<Vec<String>>()
-            .join("_-_"),
-    );
+    if book.authors.len() != 0 {
+        filename_parts.push(
+            book.authors
+                .clone()
+                .into_iter()
+                .map(|author| get_author_short_name(author))
+                .collect::<Vec<String>>()
+                .join("_-_"),
+        );
+    }
+
     filename_parts.push(book.title.trim().to_string());
 
     let transliterator = Transliterator::new(gost779b_ru());
-    let mut filename_without_type = transliterator.convert(&filename_parts.join(""), false);
+    let mut filename_without_type = transliterator.convert(&filename_parts.join("_"), false);
 
     for char in "(),….’!\"?»«':".get(..) {
         filename_without_type = filename_without_type.replace(char, "");
