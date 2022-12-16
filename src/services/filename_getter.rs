@@ -1,6 +1,6 @@
 use translit::{gost779b_ru, CharsMapping, Transliterator};
 
-use super::book_library::types::{BookAuthor, Book};
+use super::book_library::types::{BookAuthor, BookWithRemote};
 
 pub fn get_author_short_name(author: BookAuthor) -> String {
     let mut parts: Vec<String> = vec![];
@@ -22,7 +22,7 @@ pub fn get_author_short_name(author: BookAuthor) -> String {
     parts.join(" ")
 }
 
-pub fn get_filename_by_book(book: &Book, file_type: &str, force_zip: bool) -> String {
+pub fn get_filename_by_book(book: &BookWithRemote, file_type: &str, force_zip: bool) -> String {
     let book_id = book.remote_id;
     let mut filename_parts: Vec<String> = vec![];
 
