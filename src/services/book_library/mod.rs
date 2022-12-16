@@ -46,13 +46,16 @@ pub async fn get_sources() -> Result<types::Source, Box<dyn std::error::Error + 
 
 pub async fn get_book(
     book_id: u32,
-) -> Result<types::Book, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<types::BookWithRemote, Box<dyn std::error::Error + Send + Sync>> {
     _make_request(format!("/api/v1/books/{book_id}").as_str(), vec![]).await
 }
 
 pub async fn get_remote_book(
     source_id: u32,
-    book_id: u32,
-) -> Result<types::Book, Box<dyn std::error::Error + Send + Sync>> {
-    _make_request(format!("/api/v1/books/remote/{source_id}/{book_id}").as_ref(), vec![]).await
+    remote_id: u32,
+) -> Result<types::BookWithRemote, Box<dyn std::error::Error + Send + Sync>> {
+    match _make_request::<types::Book>(format!("/api/v1/books/remote/{source_id}/{remote_id}").as_ref(), vec![]).await {
+        Ok(v) => Ok(types::BookWithRemote::from_book(v, remote_id)),
+        Err(err) => Err(err),
+    }
 }

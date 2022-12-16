@@ -10,7 +10,7 @@ use self::types::{DownloadResult, Data, SpooledTempAsyncRead};
 use self::utils::response_to_tempfile;
 use self::zip::{unzip, zip};
 
-use super::book_library::types::Book;
+use super::book_library::types::BookWithRemote;
 use super::covert::convert_file;
 use super::{book_library::get_remote_book, filename_getter::get_filename_by_book};
 
@@ -75,7 +75,7 @@ pub async fn download<'a>(
 }
 
 pub async fn download_chain<'a>(
-    book: &'a Book,
+    book: &'a BookWithRemote,
     file_type: &'a str,
     source_config: &'a config::SourceConfig,
     converting: bool
@@ -150,7 +150,7 @@ pub async fn download_chain<'a>(
 }
 
 pub async fn start_download_futures(
-    book: &Book,
+    book: &BookWithRemote,
     file_type: &str,
 ) -> Option<DownloadResult> {
     let mut futures = FuturesUnordered::new();
