@@ -64,6 +64,9 @@ pub fn get_filename_by_book(book: &BookWithRemote, file_type: &str, force_zip: b
         (" ", "_"),
         ("'", ""),
         ("`", ""),
+        ("[", ""),
+        ("]", ""),
+        ("\"", ""),
     ]
     .iter()
     .cloned()
