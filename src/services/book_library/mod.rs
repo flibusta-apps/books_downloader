@@ -15,8 +15,6 @@ where
 
     let formated_url = format!("{}{}", &config::CONFIG.book_library_url, url);
 
-    log::debug!("{}", formated_url);
-
     let response = client
         .get(formated_url)
         .query(&params)
