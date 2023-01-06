@@ -26,7 +26,6 @@ pub async fn download(
     let download_result = match book_download(source_id, remote_id, file_type.as_str()).await {
         Ok(v) => v,
         Err(err) => {
-            log::debug!("{:?}", err);
             return Err((StatusCode::NO_CONTENT, "Can't download!".to_string()))
         },
     };
