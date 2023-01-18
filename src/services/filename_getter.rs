@@ -75,6 +75,8 @@ pub fn get_filename_by_book(book: &BookWithRemote, file_type: &str, force_zip: b
     let replace_transliterator = Transliterator::new(replace_char_map);
     let normal_filename = replace_transliterator.convert(&filename_without_type, false);
 
+    let normal_filename = normal_filename.replace(|c: char| !c.is_ascii(), "");
+
     let right_part = format!(".{book_id}.{file_type_}");
     let normal_filename_slice = std::cmp::min(64 - right_part.len() - 1, normal_filename.len());
     let left_part = normal_filename.get(..normal_filename_slice).unwrap();
