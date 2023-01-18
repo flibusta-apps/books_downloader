@@ -50,9 +50,9 @@ pub fn get_filename_by_book(book: &BookWithRemote, file_type: &str, force_zip: b
     let transliterator = Transliterator::new(gost779b_ru());
     let mut filename_without_type = transliterator.convert(&filename_parts.join("_"), false);
 
-    for char in "(),….’!\"?»«':".get(..) {
+    "(),….’!\"?»«':".get(..).into_iter().for_each(|char| {
         filename_without_type = filename_without_type.replace(char, "");
-    }
+    });
 
     let replace_char_map: CharsMapping = [
         ("—", "-"),
