@@ -79,7 +79,9 @@ pub fn get_filename_by_book(book: &BookWithRemote, file_type: &str, force_zip: b
 
     let right_part = format!(".{book_id}.{file_type_}");
     let normal_filename_slice = std::cmp::min(64 - right_part.len() - 1, normal_filename.len());
-    let left_part = normal_filename.get(..normal_filename_slice).unwrap();
+    let left_part = normal_filename.get(..normal_filename_slice).expect(
+        &format!("Can't slice left part: {:?} {:?}", normal_filename, normal_filename_slice)
+    );
 
     format!("{left_part}{right_part}")
 }
