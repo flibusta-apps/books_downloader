@@ -30,17 +30,21 @@ pub async fn download(
         },
     };
 
-    let (data, filename) = match download_result {
+    let data = match download_result {
         Some(v) => v,
         None => return Err((StatusCode::NO_CONTENT, "Can't download!".to_string())),
     };
+
+    let filename = data.filename.clone();
+    let filename_ascii = data.filename_ascii.clone();
 
     let reader = data.get_async_read();
     let stream = ReaderStream::new(reader);
     let body = StreamBody::new(stream);
 
     let headers = AppendHeaders([
-        (header::CONTENT_DISPOSITION, format!("attachment; filename={filename}"))
+        (header::CONTENT_DISPOSITION, format!("attachment; filename={filename_ascii}")),
+        (header::HeaderName::from_static("x-filename-b64"), base64::encode(filename))
     ]);
 
     Ok((headers, body))
@@ -62,7 +66,7 @@ pub async fn get_filename(
     }
 
     let filename = match get_book(book_id).await {
-        Ok(book) => get_filename_by_book(&book, file_type.as_str(), false),
+        Ok(book) => get_filename_by_book(&book, file_type.as_str(), false, false),
         Err(_) => return (StatusCode::BAD_REQUEST, "Book not found!".to_string()),
     };
 

@@ -94,13 +94,27 @@ pub async fn download_chain<'a>(
     };
 
     if is_zip && book.file_type.to_lowercase() == "html" {
-        let filename = get_filename_by_book(book, file_type, true);
-        return Some(DownloadResult::new(Data::Response(response), filename));
+        let filename = get_filename_by_book(book, file_type, true, false);
+        let filename_ascii = get_filename_by_book(book, file_type, true, true);
+        return Some(
+            DownloadResult::new(
+                Data::Response(response),
+                filename,
+                filename_ascii
+            )
+        );
     }
 
     if !is_zip && !final_need_zip && !converting {
-        let filename = get_filename_by_book(book, &book.file_type, false);
-        return Some(DownloadResult::new(Data::Response(response), filename));
+        let filename = get_filename_by_book(book, &book.file_type, false, false);
+        let filename_ascii = get_filename_by_book(book, file_type, false, true);
+        return Some(
+            DownloadResult::new(
+                Data::Response(response),
+                filename,
+                filename_ascii,
+            )
+        );
     };
 
     let unziped_temp_file = {
@@ -133,17 +147,31 @@ pub async fn download_chain<'a>(
 
     if !final_need_zip {
         let t = SpooledTempAsyncRead::new(clean_file);
-        let filename = get_filename_by_book(book, file_type, false);
-        return Some(DownloadResult::new(Data::SpooledTempAsyncRead(t), filename));
+        let filename = get_filename_by_book(book, file_type, false, false);
+        let filename_ascii = get_filename_by_book(book, file_type, false, true);
+        return Some(
+            DownloadResult::new(
+                Data::SpooledTempAsyncRead(t),
+                filename,
+                filename_ascii
+            )
+        );
     };
 
     let t_file_type = if file_type == "fb2zip" { "fb2" } else { file_type };
-    let filename = get_filename_by_book(book, t_file_type, false);
+    let filename = get_filename_by_book(book, t_file_type, false, false);
     match zip(&mut clean_file, filename.as_str()) {
         Some(v) => {
             let t = SpooledTempAsyncRead::new(v);
-            let filename = get_filename_by_book(book, file_type, true);
-            Some(DownloadResult::new(Data::SpooledTempAsyncRead(t), filename))
+            let filename = get_filename_by_book(book, file_type, true, false);
+            let filename_ascii = get_filename_by_book(book, file_type, true, true);
+            Some(
+                DownloadResult::new(
+                    Data::SpooledTempAsyncRead(t),
+                    filename,
+                    filename_ascii
+                )
+            )
         },
         None => None,
     }
@@ -187,16 +215,14 @@ pub async fn book_download(
     source_id: u32,
     remote_id: u32,
     file_type: &str,
-) -> Result<Option<(DownloadResult, String)>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Option<DownloadResult>, Box<dyn std::error::Error + Send + Sync>> {
     let book = match get_remote_book(source_id, remote_id).await {
         Ok(v) => v,
         Err(err) => return Err(err),
     };
 
-    let filename = get_filename_by_book(&book, file_type, false);
-
     match start_download_futures(&book, file_type).await {
-        Some(v) => Ok(Some((v, filename))),
+        Some(v) => Ok(Some(v)),
         None => Ok(None),
     }
 }

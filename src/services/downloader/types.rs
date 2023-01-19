@@ -14,6 +14,7 @@ pub enum Data {
 pub struct DownloadResult {
     pub data: Data,
     pub filename: String,
+    pub filename_ascii: String,
 }
 
 pub fn get_response_async_read(it: Response) -> impl AsyncRead {
@@ -24,8 +25,8 @@ pub fn get_response_async_read(it: Response) -> impl AsyncRead {
 }
 
 impl DownloadResult {
-    pub fn new(data: Data, filename: String) -> Self {
-        Self { data, filename }
+    pub fn new(data: Data, filename: String, filename_ascii: String) -> Self {
+        Self { data, filename, filename_ascii }
     }
 
     pub fn get_async_read(self) -> Pin<Box<dyn AsyncRead + Send>> {

@@ -22,7 +22,7 @@ pub fn get_author_short_name(author: BookAuthor) -> String {
     parts.join(" ")
 }
 
-pub fn get_filename_by_book(book: &BookWithRemote, file_type: &str, force_zip: bool) -> String {
+pub fn get_filename_by_book(book: &BookWithRemote, file_type: &str, force_zip: bool, only_ascii: bool) -> String {
     let book_id = book.remote_id;
     let mut filename_parts: Vec<String> = vec![];
 
@@ -73,12 +73,14 @@ pub fn get_filename_by_book(book: &BookWithRemote, file_type: &str, force_zip: b
     .collect();
 
     let replace_transliterator = Transliterator::new(replace_char_map);
-    let normal_filename = replace_transliterator.convert(&filename_without_type, false);
+    let mut normal_filename = replace_transliterator.convert(&filename_without_type, false);
 
-    let normal_filename = normal_filename.replace(|c: char| !c.is_ascii(), "");
+    if only_ascii {
+        normal_filename = normal_filename.replace(|c: char| !c.is_ascii(), "");
+    }
 
     let right_part = format!(".{book_id}.{file_type_}");
-    let normal_filename_slice = std::cmp::min(64 - right_part.len() - 1, normal_filename.len());
+    let normal_filename_slice = std::cmp::min(64 - right_part.len() - 1, normal_filename.len() -1);
     let left_part = normal_filename.get(..normal_filename_slice).expect(
         &format!("Can't slice left part: {:?} {:?}", normal_filename, normal_filename_slice)
     );
