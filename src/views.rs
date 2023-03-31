@@ -1,26 +1,34 @@
 use axum::{
     body::StreamBody,
     extract::Path,
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, StatusCode, header::AUTHORIZATION},
     response::{IntoResponse, AppendHeaders},
 };
 use tokio_util::io::ReaderStream;
 
 use crate::{config, services::{book_library::get_book, filename_getter::get_filename_by_book, downloader::book_download}};
 
-pub async fn download(
-    Path((source_id, remote_id, file_type)): Path<(u32, u32, String)>,
-    headers: HeaderMap
-) -> impl IntoResponse {
+fn check_authorization(headers: HeaderMap) -> Result<(), (StatusCode, String)> {
     let config_api_key = config::CONFIG.api_key.clone();
 
-    let api_key = match headers.get("Authorization") {
+    let api_key = match headers.get(AUTHORIZATION) {
         Some(v) => v,
         None => return Err((StatusCode::FORBIDDEN, "No api-key!".to_string())),
     };
 
     if config_api_key != api_key.to_str().unwrap() {
         return Err((StatusCode::FORBIDDEN, "Wrong api-key!".to_string()))
+    }
+
+    Ok(())
+}
+
+pub async fn download(
+    Path((source_id, remote_id, file_type)): Path<(u32, u32, String)>,
+    headers: HeaderMap
+) -> impl IntoResponse {
+    if let Err(v) = check_authorization(headers) {
+        return Err(v);
     }
 
     let download_result = match book_download(source_id, remote_id, file_type.as_str()).await {
@@ -54,15 +62,8 @@ pub async fn get_filename(
     Path((book_id, file_type)): Path<(u32, String)>,
     headers: HeaderMap
 ) -> (StatusCode, String){
-    let config_api_key = config::CONFIG.api_key.clone();
-
-    let api_key = match headers.get("Authorization") {
-        Some(v) => v,
-        None => return (StatusCode::FORBIDDEN, "No api-key!".to_string()),
-    };
-
-    if config_api_key != api_key.to_str().unwrap() {
-        return (StatusCode::FORBIDDEN, "Wrong api-key!".to_string())
+    if let Err(v) = check_authorization(headers) {
+        return v;
     }
 
     let filename = match get_book(book_id).await {
