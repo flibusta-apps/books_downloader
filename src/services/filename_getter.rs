@@ -5,16 +5,16 @@ use super::book_library::types::{BookAuthor, BookWithRemote};
 pub fn get_author_short_name(author: BookAuthor) -> String {
     let mut parts: Vec<String> = vec![];
 
-    if author.last_name.len() != 0 {
+    if !author.last_name.is_empty() {
         parts.push(author.last_name);
     }
 
-    if author.first_name.len() != 0 {
+    if !author.first_name.is_empty() {
         let first_char = author.first_name.chars().next().unwrap();
         parts.push(first_char.to_string());
     }
 
-    if author.middle_name.len() != 0 {
+    if !author.middle_name.is_empty() {
         let first_char = author.middle_name.chars().next().unwrap();
         parts.push(first_char.to_string());
     }
@@ -34,12 +34,12 @@ pub fn get_filename_by_book(book: &BookWithRemote, file_type: &str, force_zip: b
         file_type.to_string()
     };
 
-    if book.authors.len() != 0 {
+    if !book.authors.is_empty() {
         filename_parts.push(
             book.authors
                 .clone()
                 .into_iter()
-                .map(|author| get_author_short_name(author))
+                .map(get_author_short_name)
                 .collect::<Vec<String>>()
                 .join("_-_"),
         );
@@ -67,10 +67,7 @@ pub fn get_filename_by_book(book: &BookWithRemote, file_type: &str, force_zip: b
         ("[", ""),
         ("]", ""),
         ("\"", ""),
-    ]
-    .iter()
-    .cloned()
-    .collect();
+    ].to_vec();
 
     let replace_transliterator = Transliterator::new(replace_char_map);
     let mut normal_filename = replace_transliterator.convert(&filename_without_type, false);
@@ -81,9 +78,7 @@ pub fn get_filename_by_book(book: &BookWithRemote, file_type: &str, force_zip: b
 
     let right_part = format!(".{book_id}.{file_type_}");
     let normal_filename_slice = std::cmp::min(64 - right_part.len() - 1, normal_filename.len() -1);
-    let left_part = normal_filename.get(..normal_filename_slice).expect(
-        &format!("Can't slice left part: {:?} {:?}", normal_filename, normal_filename_slice)
-    );
+    let left_part = normal_filename.get(..normal_filename_slice).unwrap_or_else(|| panic!("Can't slice left part: {:?} {:?}", normal_filename, normal_filename_slice));
 
     format!("{left_part}{right_part}")
 }

@@ -27,9 +27,7 @@ pub async fn download(
     Path((source_id, remote_id, file_type)): Path<(u32, u32, String)>,
     headers: HeaderMap
 ) -> impl IntoResponse {
-    if let Err(v) = check_authorization(headers) {
-        return Err(v);
-    }
+    check_authorization(headers)?;
 
     let download_result = match book_download(source_id, remote_id, file_type.as_str()).await {
         Ok(v) => v,

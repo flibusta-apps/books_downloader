@@ -27,7 +27,7 @@ pub fn unzip(tmp_file: SpooledTempFile, file_type: &str) -> Option<SpooledTempFi
         }
     }
 
-    return None;
+    None
 }
 
 pub fn zip(tmp_file: &mut SpooledTempFile, filename: &str) -> Option<SpooledTempFile> {
