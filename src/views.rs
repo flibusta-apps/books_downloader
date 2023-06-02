@@ -49,7 +49,7 @@ pub async fn download(
     let stream = ReaderStream::new(reader);
     let body = StreamBody::new(stream);
 
-    let encoder = general_purpose::STANDARD_NO_PAD;
+    let encoder = general_purpose::STANDARD;
 
     let headers = AppendHeaders([
         (header::CONTENT_DISPOSITION, format!("attachment; filename={filename_ascii}")),
