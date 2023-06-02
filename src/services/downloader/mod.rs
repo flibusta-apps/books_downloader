@@ -194,7 +194,7 @@ pub async fn start_download_futures(
         if file_type == "epub" || file_type == "fb2" {
             futures.push(download_chain(
                 book,
-                file_type.clone(),
+                file_type,
                 source_config,
                 true
             ))
@@ -202,9 +202,8 @@ pub async fn start_download_futures(
     }
 
     while let Some(result) = futures.next().await {
-        match result {
-            Some(v) => return Some(v),
-            None => (),
+        if let Some(v) = result {
+            return Some(v)
         }
     }
 

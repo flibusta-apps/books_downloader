@@ -4,6 +4,7 @@ use axum::{
     http::{header, HeaderMap, StatusCode, header::AUTHORIZATION},
     response::{IntoResponse, AppendHeaders},
 };
+use base64::{engine::general_purpose, Engine};
 use tokio_util::io::ReaderStream;
 
 use crate::{config, services::{book_library::get_book, filename_getter::get_filename_by_book, downloader::book_download}};
@@ -48,9 +49,11 @@ pub async fn download(
     let stream = ReaderStream::new(reader);
     let body = StreamBody::new(stream);
 
+    let encoder = general_purpose::STANDARD_NO_PAD;
+
     let headers = AppendHeaders([
         (header::CONTENT_DISPOSITION, format!("attachment; filename={filename_ascii}")),
-        (header::HeaderName::from_static("x-filename-b64"), base64::encode(filename))
+        (header::HeaderName::from_static("x-filename-b64"), encoder.encode(filename))
     ]);
 
     Ok((headers, body))
