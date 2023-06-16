@@ -77,8 +77,24 @@ pub fn get_filename_by_book(book: &BookWithRemote, file_type: &str, force_zip: b
     }
 
     let right_part = format!(".{book_id}.{file_type_}");
-    let normal_filename_slice = std::cmp::min(64 - right_part.len() - 1, normal_filename.len() -1);
-    let left_part = normal_filename.get(..normal_filename_slice).unwrap_or_else(|| panic!("Can't slice left part: {:?} {:?}", normal_filename, normal_filename_slice));
+    let normal_filename_slice = std::cmp::min(64 - right_part.len() - 1, normal_filename.len() - 1);
+
+    let left_part = if normal_filename_slice == normal_filename.len() - 1 {
+        &normal_filename
+    } else {
+        normal_filename.get(..normal_filename_slice).unwrap_or_else(|| panic!("Can't slice left part: {:?} {:?}", normal_filename, normal_filename_slice))
+    };
 
     format!("{left_part}{right_part}")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {
+        let t = "Usachev_A_A_Priklyucheniya_«Kotoboya»";
+        let r = t.get(..t.len() - 2);
+
+        println!("{:?}", r);
+    }
 }
