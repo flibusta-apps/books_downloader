@@ -59,6 +59,11 @@ async fn get_router() -> Router {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .compact()
+        .init();
+
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
 
     let app = get_router().await;
