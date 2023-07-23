@@ -1,3 +1,4 @@
+use once_cell::sync::Lazy;
 use serde::Deserialize;
 
 fn get_env(env: &'static str) -> String {
@@ -40,6 +41,6 @@ impl Config {
     }
 }
 
-lazy_static! {
-    pub static ref CONFIG: Config = Config::load();
-}
+pub static CONFIG: Lazy<Config> = Lazy::new(|| {
+    Config::load()
+});
