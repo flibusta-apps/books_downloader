@@ -1,10 +1,10 @@
-use std::io::{Seek, SeekFrom};
+use std::io::Seek;
 
 use tempfile::SpooledTempFile;
 use zip::write::FileOptions;
 
 
-pub fn unzip(tmp_file: SpooledTempFile, file_type: &str) -> Option<SpooledTempFile> {
+pub fn unzip(tmp_file: SpooledTempFile, file_type: &str) -> Option<(SpooledTempFile, usize)> {
     let mut archive = zip::ZipArchive::new(tmp_file).unwrap();
 
     let file_type_lower = file_type.to_lowercase();
@@ -16,21 +16,21 @@ pub fn unzip(tmp_file: SpooledTempFile, file_type: &str) -> Option<SpooledTempFi
         if filename.contains(&file_type_lower) || file.name().to_lowercase() == "elector" {
             let mut output_file = tempfile::spooled_tempfile(5 * 1024 * 1024);
 
-            match std::io::copy(&mut file, &mut output_file) {
-                Ok(_) => (),
+            let size: usize = match std::io::copy(&mut file, &mut output_file) {
+                Ok(v) => v.try_into().unwrap(),
                 Err(_) => return None,
             };
 
-            output_file.seek(SeekFrom::Start(0)).unwrap();
+            output_file.rewind().unwrap();
 
-            return Some(output_file);
+            return Some((output_file, size));
         }
     }
 
     None
 }
 
-pub fn zip(tmp_file: &mut SpooledTempFile, filename: &str) -> Option<SpooledTempFile> {
+pub fn zip(tmp_file: &mut SpooledTempFile, filename: &str) -> Option<(SpooledTempFile, usize)> {
     let output_file = tempfile::spooled_tempfile(5 * 1024 * 1024);
     let mut archive = zip::ZipWriter::new(output_file);
 
@@ -54,7 +54,9 @@ pub fn zip(tmp_file: &mut SpooledTempFile, filename: &str) -> Option<SpooledTemp
         Err(_) => return None,
     };
 
-    archive_result.seek(SeekFrom::Start(0)).unwrap();
+    let data_size: usize = archive_result.stream_position().unwrap().try_into().unwrap();
 
-    Some(archive_result)
+    archive_result.rewind().unwrap();
+
+    Some((archive_result, data_size))
 }

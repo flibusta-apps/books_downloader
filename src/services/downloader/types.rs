@@ -15,6 +15,7 @@ pub struct DownloadResult {
     pub data: Data,
     pub filename: String,
     pub filename_ascii: String,
+    pub data_size: usize,
 }
 
 pub fn get_response_async_read(it: Response) -> impl AsyncRead {
@@ -25,8 +26,8 @@ pub fn get_response_async_read(it: Response) -> impl AsyncRead {
 }
 
 impl DownloadResult {
-    pub fn new(data: Data, filename: String, filename_ascii: String) -> Self {
-        Self { data, filename, filename_ascii }
+    pub fn new(data: Data, filename: String, filename_ascii: String, data_size: usize) -> Self {
+        Self { data, filename, filename_ascii, data_size }
     }
 
     pub fn get_async_read(self) -> Pin<Box<dyn AsyncRead + Send>> {

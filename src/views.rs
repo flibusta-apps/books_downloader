@@ -40,6 +40,7 @@ pub async fn download(
 
     let filename = data.filename.clone();
     let filename_ascii = data.filename_ascii.clone();
+    let file_size = data.data_size;
 
     let reader = data.get_async_read();
     let stream = ReaderStream::new(reader);
@@ -51,6 +52,10 @@ pub async fn download(
         (
             header::CONTENT_DISPOSITION,
             format!("attachment; filename={filename_ascii}"),
+        ),
+        (
+            header::CONTENT_LENGTH,
+            format!("{file_size}")
         ),
         (
             header::HeaderName::from_static("x-filename-b64"),

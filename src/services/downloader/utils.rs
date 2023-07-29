@@ -6,8 +6,10 @@ use bytes::Buf;
 use std::io::{Seek, SeekFrom, Write};
 
 
-pub async fn response_to_tempfile(res: &mut Response) -> Option<SpooledTempFile> {
+pub async fn response_to_tempfile(res: &mut Response) -> Option<(SpooledTempFile, usize)> {
     let mut tmp_file = tempfile::spooled_tempfile(5 * 1024 * 1024);
+
+    let mut data_size: usize = 0;
 
     {
         loop {
@@ -23,6 +25,8 @@ pub async fn response_to_tempfile(res: &mut Response) -> Option<SpooledTempFile>
                 None => break,
             };
 
+            data_size += data.len();
+
             match tmp_file.write(data.chunk()) {
                 Ok(_) => (),
                 Err(_) => return None,
@@ -32,5 +36,5 @@ pub async fn response_to_tempfile(res: &mut Response) -> Option<SpooledTempFile>
         tmp_file.seek(SeekFrom::Start(0)).unwrap();
     }
 
-    Some(tmp_file)
+    Some((tmp_file, data_size))
 }
