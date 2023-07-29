@@ -96,11 +96,14 @@ pub async fn download_chain<'a>(
     if is_zip && book.file_type.to_lowercase() == "html" {
         let filename = get_filename_by_book(book, file_type, true, false);
         let filename_ascii = get_filename_by_book(book, file_type, true, true);
+        let data_size: usize = response.headers().get("Content-Length").unwrap().to_str().unwrap().parse().unwrap();
+
         return Some(
             DownloadResult::new(
                 Data::Response(response),
                 filename,
-                filename_ascii
+                filename_ascii,
+                data_size
             )
         );
     }
@@ -108,19 +111,22 @@ pub async fn download_chain<'a>(
     if !is_zip && !final_need_zip && !converting {
         let filename = get_filename_by_book(book, &book.file_type, false, false);
         let filename_ascii = get_filename_by_book(book, file_type, false, true);
+        let data_size: usize = response.headers().get("Content-Length").unwrap().to_str().unwrap().parse().unwrap();
+
         return Some(
             DownloadResult::new(
                 Data::Response(response),
                 filename,
                 filename_ascii,
+                data_size,
             )
         );
     };
 
-    let unziped_temp_file = {
+    let (unziped_temp_file, data_size) = {
         let temp_file_to_unzip_result = response_to_tempfile(&mut response).await;
         let temp_file_to_unzip = match temp_file_to_unzip_result {
-            Some(v) => v,
+            Some(v) => v.0,
             None => return None,
         };
 
@@ -131,7 +137,7 @@ pub async fn download_chain<'a>(
     };
 
 
-    let mut clean_file = if converting {
+    let (mut clean_file, data_size) = if converting {
         match convert_file(unziped_temp_file, file_type.to_string()).await {
             Some(mut response) => {
                 match response_to_tempfile(&mut response).await {
@@ -142,18 +148,20 @@ pub async fn download_chain<'a>(
             None => return None,
         }
     } else {
-        unziped_temp_file
+        (unziped_temp_file, data_size)
     };
 
     if !final_need_zip {
         let t = SpooledTempAsyncRead::new(clean_file);
         let filename = get_filename_by_book(book, file_type, false, false);
         let filename_ascii = get_filename_by_book(book, file_type, false, true);
+
         return Some(
             DownloadResult::new(
                 Data::SpooledTempAsyncRead(t),
                 filename,
-                filename_ascii
+                filename_ascii,
+                data_size
             )
         );
     };
@@ -161,15 +169,17 @@ pub async fn download_chain<'a>(
     let t_file_type = if file_type == "fb2zip" { "fb2" } else { file_type };
     let filename = get_filename_by_book(book, t_file_type, false, false);
     match zip(&mut clean_file, filename.as_str()) {
-        Some(v) => {
-            let t = SpooledTempAsyncRead::new(v);
+        Some((t_file, data_size)) => {
+            let t = SpooledTempAsyncRead::new(t_file);
             let filename = get_filename_by_book(book, file_type, true, false);
             let filename_ascii = get_filename_by_book(book, file_type, true, true);
+
             Some(
                 DownloadResult::new(
                     Data::SpooledTempAsyncRead(t),
                     filename,
-                    filename_ascii
+                    filename_ascii,
+                    data_size
                 )
             )
         },
