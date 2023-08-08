@@ -13,6 +13,7 @@ use axum::{
 };
 use axum_prometheus::PrometheusMetricLayer;
 use base64::{engine::general_purpose, Engine};
+use serde_json::json;
 use tokio_util::io::ReaderStream;
 use tower_http::trace::{self, TraceLayer};
 use tracing::Level;
@@ -70,13 +71,22 @@ pub async fn download(
     Ok((headers, body))
 }
 
-pub async fn get_filename(Path((book_id, file_type)): Path<(u32, String)>) -> (StatusCode, String) {
-    let filename = match get_book(book_id).await {
-        Ok(book) => get_filename_by_book(&book, file_type.as_str(), false, false),
+pub async fn get_filename(Path((book_id, file_type)): Path<(u32, String)>) -> impl IntoResponse {
+    let (filename, filename_ascii) = match get_book(book_id).await {
+        Ok(book) => (
+            get_filename_by_book(&book, file_type.as_str(), false, false),
+            get_filename_by_book(&book, file_type.as_str(), false, true),
+        ),
         Err(_) => return (StatusCode::BAD_REQUEST, "Book not found!".to_string()),
     };
 
-    (StatusCode::OK, filename)
+    (
+        StatusCode::OK,
+        json!({
+            "filename": filename,
+            "filename_ascii": filename_ascii
+        }).to_string()
+    )
 }
 
 async fn auth<B>(req: Request<B>, next: Next<B>) -> Result<Response, StatusCode> {
