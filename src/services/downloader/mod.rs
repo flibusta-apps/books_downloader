@@ -3,6 +3,7 @@ pub mod utils;
 pub mod zip;
 
 use reqwest::Response;
+use tokio::task::JoinSet;
 
 use crate::config;
 
@@ -14,8 +15,6 @@ use super::book_library::types::BookWithRemote;
 use super::covert::convert_file;
 use super::{book_library::get_remote_book, filename_getter::get_filename_by_book};
 
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
 
 pub async fn download<'a>(
     book_id: &'a u32,
@@ -75,27 +74,27 @@ pub async fn download<'a>(
 }
 
 pub async fn download_chain<'a>(
-    book: &'a BookWithRemote,
-    file_type: &'a str,
-    source_config: &'a config::SourceConfig,
+    book: BookWithRemote,
+    file_type: String,
+    source_config: config::SourceConfig,
     converting: bool
 ) -> Option<DownloadResult> {
     let final_need_zip = file_type == "fb2zip";
 
     let file_type_ = if converting {
-        &book.file_type
+        book.file_type.clone()
     } else {
-        file_type
+        file_type.clone()
     };
 
-    let (mut response, is_zip) = match download(&book.remote_id, file_type_, source_config).await {
+    let (mut response, is_zip) = match download(&book.remote_id, &file_type_, &source_config).await {
         Some(v) => v,
         None => return None,
     };
 
     if is_zip && book.file_type.to_lowercase() == "html" {
-        let filename = get_filename_by_book(book, file_type, true, false);
-        let filename_ascii = get_filename_by_book(book, file_type, true, true);
+        let filename = get_filename_by_book(&book, &file_type, true, false);
+        let filename_ascii = get_filename_by_book(&book, &file_type, true, true);
         let data_size: usize = response.headers().get("Content-Length").unwrap().to_str().unwrap().parse().unwrap();
 
         return Some(
@@ -109,8 +108,8 @@ pub async fn download_chain<'a>(
     }
 
     if !is_zip && !final_need_zip && !converting {
-        let filename = get_filename_by_book(book, &book.file_type, false, false);
-        let filename_ascii = get_filename_by_book(book, file_type, false, true);
+        let filename = get_filename_by_book(&book, &book.file_type, false, false);
+        let filename_ascii = get_filename_by_book(&book, &file_type, false, true);
         let data_size: usize = response.headers().get("Content-Length").unwrap().to_str().unwrap().parse().unwrap();
 
         return Some(
@@ -153,8 +152,8 @@ pub async fn download_chain<'a>(
 
     if !final_need_zip {
         let t = SpooledTempAsyncRead::new(clean_file);
-        let filename = get_filename_by_book(book, file_type, false, false);
-        let filename_ascii = get_filename_by_book(book, file_type, false, true);
+        let filename = get_filename_by_book(&book, &file_type, false, false);
+        let filename_ascii = get_filename_by_book(&book, &file_type, false, true);
 
         return Some(
             DownloadResult::new(
@@ -166,13 +165,13 @@ pub async fn download_chain<'a>(
         );
     };
 
-    let t_file_type = if file_type == "fb2zip" { "fb2" } else { file_type };
-    let filename = get_filename_by_book(book, t_file_type, false, false);
+    let t_file_type = if file_type == "fb2zip" { "fb2" } else { &file_type };
+    let filename = get_filename_by_book(&book, t_file_type, false, false);
     match zip(&mut clean_file, filename.as_str()) {
         Some((t_file, data_size)) => {
             let t = SpooledTempAsyncRead::new(t_file);
-            let filename = get_filename_by_book(book, file_type, true, false);
-            let filename_ascii = get_filename_by_book(book, file_type, true, true);
+            let filename = get_filename_by_book(&book, &file_type, true, false);
+            let filename_ascii = get_filename_by_book(&book, &file_type, true, true);
 
             Some(
                 DownloadResult::new(
@@ -191,29 +190,31 @@ pub async fn start_download_futures(
     book: &BookWithRemote,
     file_type: &str,
 ) -> Option<DownloadResult> {
-    let mut futures = FuturesUnordered::new();
+    let mut tasks = JoinSet::new();
 
     for source_config in &config::CONFIG.fl_sources {
-        futures.push(download_chain(
-            book,
-            file_type,
-            source_config,
+        tasks.spawn(download_chain(
+            book.clone(),
+            file_type.to_string(),
+            source_config.clone(),
             false
         ));
 
         if file_type == "epub" || file_type == "fb2" {
-            futures.push(download_chain(
-                book,
-                file_type,
-                source_config,
+            tasks.spawn(download_chain(
+                book.clone(),
+                file_type.to_string(),
+                source_config.clone(),
                 true
-            ))
+            ));
         }
     }
 
-    while let Some(result) = futures.next().await {
-        if let Some(v) = result {
-            return Some(v)
+    while let Some(task_result) = tasks.join_next().await {
+        if let Ok(task_result) = task_result {
+            if let Some(v) = task_result {
+                return Some(v);
+            }
         }
     }
 
