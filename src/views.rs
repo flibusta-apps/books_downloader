@@ -58,6 +58,10 @@ pub async fn download(
             format!("{file_size}")
         ),
         (
+            header::HeaderName::from_static("x-filename"),
+            encoder.encode(filename_ascii),
+        ),
+        (
             header::HeaderName::from_static("x-filename-b64"),
             encoder.encode(filename),
         ),
