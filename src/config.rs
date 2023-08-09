@@ -20,6 +20,7 @@ pub struct Config {
     pub book_library_url: String,
 
     pub converter_url: String,
+    pub converter_api_key: String,
 
     pub sentry_dsn: String
 }
@@ -35,6 +36,7 @@ impl Config {
             book_library_url: get_env("BOOK_LIBRARY_URL"),
 
             converter_url: get_env("CONVERTER_URL"),
+            converter_api_key: get_env("CONVERTER_API_KEY"),
 
             sentry_dsn: get_env("SENTRY_DSN")
         }

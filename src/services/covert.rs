@@ -18,6 +18,7 @@ pub async fn convert_file(file: SpooledTempFile, file_type: String) -> Option<Re
     let response = client
         .post(&config::CONFIG.converter_url)
         .multipart(form)
+        .header("Authorization", &config::CONFIG.converter_api_key)
         .send().await;
 
     let response = match response {
