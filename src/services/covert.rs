@@ -1,4 +1,4 @@
-use reqwest::{Response, multipart::{Form, Part}, Body};
+use reqwest::{Response, Body};
 use tempfile::SpooledTempFile;
 use tokio_util::io::ReaderStream;
 
@@ -7,17 +7,17 @@ use crate::config;
 use super::downloader::types::SpooledTempAsyncRead;
 
 pub async fn convert_file(file: SpooledTempFile, file_type: String) -> Option<Response> {
-    let client = reqwest::Client::new();
+    let body = Body::wrap_stream(ReaderStream::new(SpooledTempAsyncRead::new(file)));
 
-    let async_file = Body::wrap_stream(ReaderStream::new(SpooledTempAsyncRead::new(file)));
-    let file_part = Part::stream(async_file).file_name("file");
-    let form = Form::new()
-        .text("format", file_type.clone())
-        .part("file", file_part);
-
-    let response = client
-        .post(&config::CONFIG.converter_url)
-        .multipart(form)
+    let response = reqwest::Client::new()
+        .post(
+            format!(
+                "{}{}",
+                config::CONFIG.converter_url,
+                file_type
+            )
+        )
+        .body(body)
         .header("Authorization", &config::CONFIG.converter_api_key)
         .send().await;
 
