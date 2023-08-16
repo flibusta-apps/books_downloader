@@ -211,10 +211,8 @@ pub async fn start_download_futures(
     }
 
     while let Some(task_result) = tasks.join_next().await {
-        if let Ok(task_result) = task_result {
-            if let Some(v) = task_result {
-                return Some(v);
-            }
+        if let Ok(Some(task_result)) = task_result {
+            return Some(task_result);
         }
     }
 
