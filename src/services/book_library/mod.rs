@@ -13,10 +13,10 @@ where
 {
     let client = reqwest::Client::new();
 
-    let formated_url = format!("{}{}", &config::CONFIG.book_library_url, url);
+    let formatted_url = format!("{}{}", &config::CONFIG.book_library_url, url);
 
     let response = client
-        .get(formated_url)
+        .get(formatted_url)
         .query(&params)
         .header("Authorization", &config::CONFIG.book_library_api_key)
         .send()

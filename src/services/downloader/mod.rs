@@ -122,7 +122,7 @@ pub async fn download_chain<'a>(
         );
     };
 
-    let (unziped_temp_file, data_size) = {
+    let (unzipped_temp_file, data_size) = {
         let temp_file_to_unzip_result = response_to_tempfile(&mut response).await;
         let temp_file_to_unzip = match temp_file_to_unzip_result {
             Some(v) => v.0,
@@ -137,7 +137,7 @@ pub async fn download_chain<'a>(
 
 
     let (mut clean_file, data_size) = if converting {
-        match convert_file(unziped_temp_file, file_type.to_string()).await {
+        match convert_file(unzipped_temp_file, file_type.to_string()).await {
             Some(mut response) => {
                 match response_to_tempfile(&mut response).await {
                     Some(v) => v,
@@ -147,7 +147,7 @@ pub async fn download_chain<'a>(
             None => return None,
         }
     } else {
-        (unziped_temp_file, data_size)
+        (unzipped_temp_file, data_size)
     };
 
     if !final_need_zip {
