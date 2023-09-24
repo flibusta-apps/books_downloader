@@ -22,7 +22,12 @@ pub fn get_author_short_name(author: BookAuthor) -> String {
     parts.join(" ")
 }
 
-pub fn get_filename_by_book(book: &BookWithRemote, file_type: &str, force_zip: bool, only_ascii: bool) -> String {
+pub fn get_filename_by_book(
+    book: &BookWithRemote,
+    file_type: &str,
+    force_zip: bool,
+    only_ascii: bool,
+) -> String {
     let book_id = book.remote_id;
     let mut filename_parts: Vec<String> = vec![];
 
@@ -67,7 +72,8 @@ pub fn get_filename_by_book(book: &BookWithRemote, file_type: &str, force_zip: b
         ("[", ""),
         ("]", ""),
         ("\"", ""),
-    ].to_vec();
+    ]
+    .to_vec();
 
     let replace_transliterator = Transliterator::new(replace_char_map);
     let mut normal_filename = replace_transliterator.convert(&filename_without_type, false);
@@ -82,7 +88,14 @@ pub fn get_filename_by_book(book: &BookWithRemote, file_type: &str, force_zip: b
     let left_part = if normal_filename_slice == normal_filename.len() - 1 {
         &normal_filename
     } else {
-        normal_filename.get(..normal_filename_slice).unwrap_or_else(|| panic!("Can't slice left part: {:?} {:?}", normal_filename, normal_filename_slice))
+        normal_filename
+            .get(..normal_filename_slice)
+            .unwrap_or_else(|| {
+                panic!(
+                    "Can't slice left part: {:?} {:?}",
+                    normal_filename, normal_filename_slice
+                )
+            })
     };
 
     format!("{left_part}{right_part}")

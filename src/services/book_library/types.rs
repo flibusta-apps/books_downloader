@@ -1,6 +1,5 @@
 use serde::Deserialize;
 
-
 #[derive(Deserialize, Debug, Clone)]
 pub struct Source {
     // id: u32,
@@ -45,7 +44,7 @@ impl BookWithRemote {
             lang: book.lang,
             file_type: book.file_type,
             uploaded: book.uploaded,
-            authors: book.authors
+            authors: book.authors,
         }
     }
 }
