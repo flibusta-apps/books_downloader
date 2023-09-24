@@ -3,7 +3,6 @@ use std::io::Seek;
 use tempfile::SpooledTempFile;
 use zip::write::FileOptions;
 
-
 pub fn unzip(tmp_file: SpooledTempFile, file_type: &str) -> Option<(SpooledTempFile, usize)> {
     let mut archive = zip::ZipArchive::new(tmp_file).unwrap();
 
@@ -54,7 +53,11 @@ pub fn zip(tmp_file: &mut SpooledTempFile, filename: &str) -> Option<(SpooledTem
         Err(_) => return None,
     };
 
-    let data_size: usize = archive_result.stream_position().unwrap().try_into().unwrap();
+    let data_size: usize = archive_result
+        .stream_position()
+        .unwrap()
+        .try_into()
+        .unwrap();
 
     archive_result.rewind().unwrap();
 

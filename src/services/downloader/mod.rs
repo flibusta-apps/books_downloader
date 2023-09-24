@@ -7,14 +7,13 @@ use tokio::task::JoinSet;
 
 use crate::config;
 
-use self::types::{DownloadResult, Data, SpooledTempAsyncRead};
+use self::types::{Data, DownloadResult, SpooledTempAsyncRead};
 use self::utils::response_to_tempfile;
 use self::zip::{unzip, zip};
 
 use super::book_library::types::BookWithRemote;
 use super::covert::convert_file;
 use super::{book_library::get_remote_book, filename_getter::get_filename_by_book};
-
 
 pub async fn download<'a>(
     book_id: &'a u32,
@@ -63,8 +62,7 @@ pub async fn download<'a>(
         return Some((response, false));
     }
 
-    if content_type.contains("text/html")
-    {
+    if content_type.contains("text/html") {
         return None;
     }
 
@@ -77,7 +75,7 @@ pub async fn download_chain<'a>(
     book: BookWithRemote,
     file_type: String,
     source_config: config::SourceConfig,
-    converting: bool
+    converting: bool,
 ) -> Option<DownloadResult> {
     let final_need_zip = file_type == "fb2zip";
 
@@ -87,7 +85,8 @@ pub async fn download_chain<'a>(
         file_type.clone()
     };
 
-    let (mut response, is_zip) = match download(&book.remote_id, &file_type_, &source_config).await {
+    let (mut response, is_zip) = match download(&book.remote_id, &file_type_, &source_config).await
+    {
         Some(v) => v,
         None => return None,
     };
@@ -95,31 +94,41 @@ pub async fn download_chain<'a>(
     if is_zip && book.file_type.to_lowercase() == "html" {
         let filename = get_filename_by_book(&book, &file_type, true, false);
         let filename_ascii = get_filename_by_book(&book, &file_type, true, true);
-        let data_size: usize = response.headers().get("Content-Length").unwrap().to_str().unwrap().parse().unwrap();
+        let data_size: usize = response
+            .headers()
+            .get("Content-Length")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
 
-        return Some(
-            DownloadResult::new(
-                Data::Response(response),
-                filename,
-                filename_ascii,
-                data_size
-            )
-        );
+        return Some(DownloadResult::new(
+            Data::Response(response),
+            filename,
+            filename_ascii,
+            data_size,
+        ));
     }
 
     if !is_zip && !final_need_zip && !converting {
         let filename = get_filename_by_book(&book, &book.file_type, false, false);
         let filename_ascii = get_filename_by_book(&book, &file_type, false, true);
-        let data_size: usize = response.headers().get("Content-Length").unwrap().to_str().unwrap().parse().unwrap();
+        let data_size: usize = response
+            .headers()
+            .get("Content-Length")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
 
-        return Some(
-            DownloadResult::new(
-                Data::Response(response),
-                filename,
-                filename_ascii,
-                data_size,
-            )
-        );
+        return Some(DownloadResult::new(
+            Data::Response(response),
+            filename,
+            filename_ascii,
+            data_size,
+        ));
     };
 
     let (unzipped_temp_file, data_size) = {
@@ -135,14 +144,11 @@ pub async fn download_chain<'a>(
         }
     };
 
-
     let (mut clean_file, data_size) = if converting {
         match convert_file(unzipped_temp_file, file_type.to_string()).await {
-            Some(mut response) => {
-                match response_to_tempfile(&mut response).await {
-                    Some(v) => v,
-                    None => return None,
-                }
+            Some(mut response) => match response_to_tempfile(&mut response).await {
+                Some(v) => v,
+                None => return None,
             },
             None => return None,
         }
@@ -155,17 +161,19 @@ pub async fn download_chain<'a>(
         let filename = get_filename_by_book(&book, &file_type, false, false);
         let filename_ascii = get_filename_by_book(&book, &file_type, false, true);
 
-        return Some(
-            DownloadResult::new(
-                Data::SpooledTempAsyncRead(t),
-                filename,
-                filename_ascii,
-                data_size
-            )
-        );
+        return Some(DownloadResult::new(
+            Data::SpooledTempAsyncRead(t),
+            filename,
+            filename_ascii,
+            data_size,
+        ));
     };
 
-    let t_file_type = if file_type == "fb2zip" { "fb2" } else { &file_type };
+    let t_file_type = if file_type == "fb2zip" {
+        "fb2"
+    } else {
+        &file_type
+    };
     let filename = get_filename_by_book(&book, t_file_type, false, false);
     match zip(&mut clean_file, filename.as_str()) {
         Some((t_file, data_size)) => {
@@ -173,15 +181,13 @@ pub async fn download_chain<'a>(
             let filename = get_filename_by_book(&book, &file_type, true, false);
             let filename_ascii = get_filename_by_book(&book, &file_type, true, true);
 
-            Some(
-                DownloadResult::new(
-                    Data::SpooledTempAsyncRead(t),
-                    filename,
-                    filename_ascii,
-                    data_size
-                )
-            )
-        },
+            Some(DownloadResult::new(
+                Data::SpooledTempAsyncRead(t),
+                filename,
+                filename_ascii,
+                data_size,
+            ))
+        }
         None => None,
     }
 }
@@ -197,7 +203,7 @@ pub async fn start_download_futures(
             book.clone(),
             file_type.to_string(),
             source_config.clone(),
-            false
+            false,
         ));
 
         if file_type == "epub" || file_type == "fb2" {
@@ -205,7 +211,7 @@ pub async fn start_download_futures(
                 book.clone(),
                 file_type.to_string(),
                 source_config.clone(),
-                true
+                true,
             ));
         }
     }

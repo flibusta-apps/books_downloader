@@ -25,7 +25,6 @@ use crate::{
     },
 };
 
-
 pub async fn download(
     Path((source_id, remote_id, file_type)): Path<(u32, u32, String)>,
 ) -> impl IntoResponse {
@@ -54,10 +53,7 @@ pub async fn download(
             header::CONTENT_DISPOSITION,
             format!("attachment; filename={filename_ascii}"),
         ),
-        (
-            header::CONTENT_LENGTH,
-            format!("{file_size}")
-        ),
+        (header::CONTENT_LENGTH, format!("{file_size}")),
         (
             header::HeaderName::from_static("x-filename-b64-ascii"),
             encoder.encode(filename_ascii),
@@ -85,7 +81,8 @@ pub async fn get_filename(Path((book_id, file_type)): Path<(u32, String)>) -> im
         json!({
             "filename": filename,
             "filename_ascii": filename_ascii
-        }).to_string()
+        })
+        .to_string(),
     )
 }
 

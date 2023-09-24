@@ -1,10 +1,8 @@
+use bytes::Buf;
 use reqwest::Response;
 use tempfile::SpooledTempFile;
-use bytes::Buf;
-
 
 use std::io::{Seek, SeekFrom, Write};
-
 
 pub async fn response_to_tempfile(res: &mut Response) -> Option<(SpooledTempFile, usize)> {
     let mut tmp_file = tempfile::spooled_tempfile(5 * 1024 * 1024);

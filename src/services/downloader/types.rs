@@ -27,7 +27,12 @@ pub fn get_response_async_read(it: Response) -> impl AsyncRead {
 
 impl DownloadResult {
     pub fn new(data: Data, filename: String, filename_ascii: String, data_size: usize) -> Self {
-        Self { data, filename, filename_ascii, data_size }
+        Self {
+            data,
+            filename,
+            filename_ascii,
+            data_size,
+        }
     }
 
     pub fn get_async_read(self) -> Pin<Box<dyn AsyncRead + Send>> {
@@ -54,7 +59,8 @@ impl AsyncRead for SpooledTempAsyncRead {
         _cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        let result = match std::io::Read::read(&mut self.get_mut().file, buf.initialize_unfilled()) {
+        let result = match std::io::Read::read(&mut self.get_mut().file, buf.initialize_unfilled())
+        {
             Ok(v) => v,
             Err(err) => return std::task::Poll::Ready(Err(err)),
         };

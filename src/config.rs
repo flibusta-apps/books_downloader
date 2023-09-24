@@ -8,7 +8,7 @@ fn get_env(env: &'static str) -> String {
 #[derive(Deserialize, Clone)]
 pub struct SourceConfig {
     pub url: String,
-    pub proxy: Option<String>
+    pub proxy: Option<String>,
 }
 
 pub struct Config {
@@ -22,7 +22,7 @@ pub struct Config {
     pub converter_url: String,
     pub converter_api_key: String,
 
-    pub sentry_dsn: String
+    pub sentry_dsn: String,
 }
 
 impl Config {
@@ -38,11 +38,9 @@ impl Config {
             converter_url: get_env("CONVERTER_URL"),
             converter_api_key: get_env("CONVERTER_API_KEY"),
 
-            sentry_dsn: get_env("SENTRY_DSN")
+            sentry_dsn: get_env("SENTRY_DSN"),
         }
     }
 }
 
-pub static CONFIG: Lazy<Config> = Lazy::new(|| {
-    Config::load()
-});
+pub static CONFIG: Lazy<Config> = Lazy::new(Config::load);
