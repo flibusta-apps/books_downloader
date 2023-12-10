@@ -1,5 +1,5 @@
 use axum::{
-    body::StreamBody,
+    body::Body,
     extract::Path,
     http::{header, StatusCode},
     response::{AppendHeaders, IntoResponse},
@@ -44,7 +44,6 @@ pub async fn download(
 
     let reader = data.get_async_read();
     let stream = ReaderStream::new(reader);
-    let body = StreamBody::new(stream);
 
     let encoder = general_purpose::STANDARD;
 
@@ -64,7 +63,7 @@ pub async fn download(
         ),
     ]);
 
-    Ok((headers, body))
+    Ok((headers, Body::from_stream(stream)))
 }
 
 pub async fn get_filename(Path((book_id, file_type)): Path<(u32, String)>) -> impl IntoResponse {
@@ -86,7 +85,7 @@ pub async fn get_filename(Path((book_id, file_type)): Path<(u32, String)>) -> im
     )
 }
 
-async fn auth<B>(req: Request<B>, next: Next<B>) -> Result<Response, StatusCode> {
+async fn auth(req: Request<axum::body::Body>, next: Next) -> Result<Response, StatusCode> {
     let auth_header = req
         .headers()
         .get(header::AUTHORIZATION)
