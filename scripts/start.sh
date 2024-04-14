@@ -1,3 +1,5 @@
+#! /usr/bin/env sh
+
 cd /app
 
 /env.sh > ./.env
