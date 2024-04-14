@@ -28,3 +28,4 @@ axum-prometheus = "0.5.0"
 base64 = "0.21.5"
 
 sentry = { version = "0.32.0", features = ["debug-images"] }
+dotenv = "0.15.0"

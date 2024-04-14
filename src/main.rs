@@ -2,6 +2,8 @@ pub mod config;
 pub mod services;
 pub mod views;
 
+use dotenv::dotenv;
+
 use sentry::{integrations::debug_images::DebugImagesIntegration, types::Dsn, ClientOptions};
 use std::{net::SocketAddr, str::FromStr};
 use tracing::info;
@@ -10,6 +12,8 @@ use crate::views::get_router;
 
 #[tokio::main]
 async fn main() {
+    dotenv().ok();
+
     tracing_subscriber::fmt()
         .with_target(false)
         .compact()

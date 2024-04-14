@@ -15,7 +15,10 @@ RUN apt-get update \
 
 RUN update-ca-certificates
 
+COPY ./scripts/*.sh /
+RUN chmod +x /*.sh
+
 WORKDIR /app
 
 COPY --from=builder /app/target/release/books_downloader /usr/local/bin
-ENTRYPOINT ["/usr/local/bin/books_downloader"]
+CMD ["/start.sh"]
