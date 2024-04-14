@@ -10,7 +10,7 @@ RUN cargo build --release --bin books_downloader
 FROM debian:bullseye-slim
 
 RUN apt-get update \
-    && apt-get install -y openssl ca-certificates \
+    && apt-get install -y openssl ca-certificates curl jq \
     && rm -rf /var/lib/apt/lists/*
 
 RUN update-ca-certificates
