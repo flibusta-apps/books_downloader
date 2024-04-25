@@ -33,12 +33,12 @@ pub fn zip(tmp_file: &mut SpooledTempFile, filename: &str) -> Option<(SpooledTem
     let output_file = tempfile::spooled_tempfile(5 * 1024 * 1024);
     let mut archive = zip::ZipWriter::new(output_file);
 
-    let options = FileOptions::default()
+    let options: FileOptions<_> = FileOptions::default()
         .compression_level(Some(9))
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o755);
 
-    match archive.start_file(filename, options) {
+    match archive.start_file::<&str, ()>(filename, options) {
         Ok(_) => (),
         Err(_) => return None,
     };
