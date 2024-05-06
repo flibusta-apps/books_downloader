@@ -213,6 +213,7 @@ dependencies = [
  "once_cell",
  "reqwest",
  "sentry",
+ "sentry-tracing",
  "serde",
  "serde_json",
  "tempfile",
