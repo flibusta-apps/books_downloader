@@ -2,6 +2,7 @@ pub mod types;
 pub mod utils;
 pub mod zip;
 
+use once_cell::sync::Lazy;
 use reqwest::Response;
 use tokio::task::JoinSet;
 
@@ -14,6 +15,8 @@ use self::zip::{unzip, zip};
 use super::book_library::types::BookWithRemote;
 use super::covert::convert_file;
 use super::{book_library::get_remote_book, filename_getter::get_filename_by_book};
+
+pub static CLIENT: Lazy<reqwest::Client> = Lazy::new(reqwest::Client::new);
 
 pub async fn download<'a>(
     book_id: &'a u32,
@@ -37,7 +40,7 @@ pub async fn download<'a>(
                 .build()
                 .unwrap()
         }
-        None => reqwest::Client::new(),
+        None => CLIENT.clone(),
     };
 
     let response = client.get(url).send().await;

@@ -1,8 +1,11 @@
 pub mod types;
 
+use once_cell::sync::Lazy;
 use serde::de::DeserializeOwned;
 
 use crate::config;
+
+pub static CLIENT: Lazy<reqwest::Client> = Lazy::new(reqwest::Client::new);
 
 async fn _make_request<T>(
     url: &str,
@@ -11,11 +14,9 @@ async fn _make_request<T>(
 where
     T: DeserializeOwned,
 {
-    let client = reqwest::Client::new();
-
     let formatted_url = format!("{}{}", &config::CONFIG.book_library_url, url);
 
-    let response = client
+    let response = CLIENT
         .get(formatted_url)
         .query(&params)
         .header("Authorization", &config::CONFIG.book_library_api_key)
