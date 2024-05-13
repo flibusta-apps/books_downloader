@@ -25,7 +25,7 @@ pub async fn response_to_tempfile(res: &mut Response) -> Option<(SpooledTempFile
 
             data_size += data.len();
 
-            match tmp_file.write(data.chunk()) {
+            match tmp_file.write_all(data.chunk()) {
                 Ok(_) => (),
                 Err(_) => return None,
             }
