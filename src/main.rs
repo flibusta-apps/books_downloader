@@ -2,7 +2,7 @@ pub mod config;
 pub mod services;
 pub mod views;
 
-use dotenv::dotenv;
+use dotenvy::dotenv;
 
 use sentry::{integrations::debug_images::DebugImagesIntegration, types::Dsn, ClientOptions};
 use sentry_tracing::EventFilter;
