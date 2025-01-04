@@ -108,8 +108,11 @@ pub async fn get_router() -> Router {
     let (prometheus_layer, metric_handle) = PrometheusMetricLayer::pair();
 
     let app_router = Router::new()
-        .route("/download/:source_id/:remote_id/:file_type", get(download))
-        .route("/filename/:book_id/:file_type", get(get_filename))
+        .route(
+            "/download/{source_id}/{remote_id}/{file_type}",
+            get(download),
+        )
+        .route("/filename/{book_id}/{file_type}", get(get_filename))
         .layer(middleware::from_fn(auth))
         .layer(prometheus_layer);
 
