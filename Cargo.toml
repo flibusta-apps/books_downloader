@@ -3,7 +3,20 @@ name = "books_downloader"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[profile.release]
+opt-level = 3
+debug = false
+strip = true
+lto = true
+codegen-units = 1
+panic = 'abort'
+
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false
+
 
 [dependencies]
 tokio = { version = "1.44.2", features = ["full"] }
