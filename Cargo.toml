@@ -26,7 +26,7 @@ reqwest = { version = "0.12.15", features = ["json", "stream", "multipart"] }
 
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"]}
-sentry-tracing = "0.41.0"
+sentry-tracing = "0.42.0"
 tower-http = { version = "0.6.2", features = ["trace"] }
 
 once_cell = "1.21.1"
@@ -38,8 +38,8 @@ translit = "0.6.0"
 zip = "4.2.0"
 tempfile = "3.19.1"
 bytes = "1.10.1"
-axum-prometheus = "0.8.0"
+axum-prometheus = "0.9.0"
 base64 = "0.22.1"
 
-sentry = { version = "0.41.0", features = ["debug-images"] }
+sentry = { version = "0.42.0", features = ["debug-images"] }
 dotenvy = "0.15.7"
