@@ -20,7 +20,7 @@ pub struct DownloadResult {
 
 pub fn get_response_async_read(it: Response) -> impl AsyncRead {
     it.bytes_stream()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        .map_err(std::io::Error::other)
         .into_async_read()
         .compat()
 }

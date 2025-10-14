@@ -74,7 +74,7 @@ pub async fn download<'a>(
     Some((response, is_zip))
 }
 
-pub async fn download_chain<'a>(
+pub async fn download_chain(
     book: BookWithRemote,
     file_type: String,
     source_config: config::SourceConfig,
