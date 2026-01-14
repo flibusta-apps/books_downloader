@@ -85,6 +85,10 @@ pub async fn get_filename(Path((book_id, file_type)): Path<(u32, String)>) -> im
     )
 }
 
+pub async fn health() -> impl IntoResponse {
+    (StatusCode::OK, json!({"status": "healthy"}).to_string())
+}
+
 async fn auth(req: Request<axum::body::Body>, next: Next) -> Result<Response, StatusCode> {
     let auth_header = req
         .headers()
@@ -116,12 +120,18 @@ pub async fn get_router() -> Router {
         .layer(middleware::from_fn(auth))
         .layer(prometheus_layer);
 
+    let health_router = Router::new().route("/health", get(health));
+
     let metric_router =
         Router::new().route("/metrics", get(|| async move { metric_handle.render() }));
 
-    Router::new().merge(app_router).merge(metric_router).layer(
-        TraceLayer::new_for_http()
-            .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
-            .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
-    )
+    Router::new()
+        .merge(app_router)
+        .merge(health_router)
+        .merge(metric_router)
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
+        )
 }
