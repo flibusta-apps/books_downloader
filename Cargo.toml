@@ -37,7 +37,7 @@ axum = "0.8.1"
 translit = "0.6.0"
 zip = "4.2.0"
 tempfile = "3.19.1"
-bytes = "1.10.1"
+bytes = "1.11.1"
 axum-prometheus = "0.9.0"
 base64 = "0.22.1"
 
