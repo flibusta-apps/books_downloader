@@ -4,7 +4,7 @@ use tempfile::SpooledTempFile;
 use tokio::io::AsyncRead;
 
 use futures::TryStreamExt;
-use tokio_util::compat::FuturesAsyncReadCompatExt;
+use tokio_util::io::StreamReader;
 
 pub enum Data {
     Response(Response),
@@ -19,10 +19,9 @@ pub struct DownloadResult {
 }
 
 pub fn get_response_async_read(it: Response) -> impl AsyncRead {
-    it.bytes_stream()
-        .map_err(std::io::Error::other)
-        .into_async_read()
-        .compat()
+    let stream = it.bytes_stream().map_err(std::io::Error::other);
+
+    StreamReader::new(stream)
 }
 
 impl DownloadResult {

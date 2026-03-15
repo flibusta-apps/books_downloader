@@ -20,7 +20,7 @@ strip = false
 
 [dependencies]
 tokio = { version = "1.44.2", features = ["full"] }
-tokio-util = { version = "0.7.14", features = ["compat"] }
+tokio-util = "0.7.14"
 futures = "0.3.31"
 reqwest = { version = "0.12.15", features = ["json", "stream", "multipart"] }
 
