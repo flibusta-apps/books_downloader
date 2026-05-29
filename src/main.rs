@@ -2,8 +2,6 @@ pub mod config;
 pub mod services;
 pub mod views;
 
-use dotenvy::dotenv;
-
 use sentry::{integrations::debug_images::DebugImagesIntegration, types::Dsn, ClientOptions};
 use sentry_tracing::EventFilter;
 use std::{net::SocketAddr, str::FromStr};
@@ -14,8 +12,6 @@ use crate::views::get_router;
 
 #[tokio::main]
 async fn main() {
-    dotenv().ok();
-
     let options = ClientOptions {
         dsn: Some(Dsn::from_str(&config::CONFIG.sentry_dsn).unwrap()),
         default_integrations: false,
