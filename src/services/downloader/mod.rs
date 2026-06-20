@@ -79,6 +79,7 @@ pub async fn download_chain(
     file_type: String,
     source_config: config::SourceConfig,
     converting: bool,
+    normalized: bool,
 ) -> Option<DownloadResult> {
     let final_need_zip = file_type == "fb2zip";
 
@@ -95,8 +96,8 @@ pub async fn download_chain(
     };
 
     if is_zip && book.file_type.to_lowercase() == "html" {
-        let filename = get_filename_by_book(&book, &file_type, true, false);
-        let filename_ascii = get_filename_by_book(&book, &file_type, true, true);
+        let filename = get_filename_by_book(&book, &file_type, true, false, normalized);
+        let filename_ascii = get_filename_by_book(&book, &file_type, true, true, normalized);
         let data_size: usize = response
             .headers()
             .get("Content-Length")
@@ -115,8 +116,8 @@ pub async fn download_chain(
     }
 
     if !is_zip && !final_need_zip && !converting {
-        let filename = get_filename_by_book(&book, &book.file_type, false, false);
-        let filename_ascii = get_filename_by_book(&book, &file_type, false, true);
+        let filename = get_filename_by_book(&book, &book.file_type, false, false, normalized);
+        let filename_ascii = get_filename_by_book(&book, &file_type, false, true, normalized);
         let data_size: usize = response
             .headers()
             .get("Content-Length")
@@ -161,8 +162,8 @@ pub async fn download_chain(
 
     if !final_need_zip {
         let t = SpooledTempAsyncRead::new(clean_file);
-        let filename = get_filename_by_book(&book, &file_type, false, false);
-        let filename_ascii = get_filename_by_book(&book, &file_type, false, true);
+        let filename = get_filename_by_book(&book, &file_type, false, false, normalized);
+        let filename_ascii = get_filename_by_book(&book, &file_type, false, true, normalized);
 
         return Some(DownloadResult::new(
             Data::SpooledTempAsyncRead(t),
@@ -177,12 +178,12 @@ pub async fn download_chain(
     } else {
         &file_type
     };
-    let filename = get_filename_by_book(&book, t_file_type, false, false);
+    let filename = get_filename_by_book(&book, t_file_type, false, false, normalized);
     match zip(&mut clean_file, filename.as_str()) {
         Some((t_file, data_size)) => {
             let t = SpooledTempAsyncRead::new(t_file);
-            let filename = get_filename_by_book(&book, &file_type, true, false);
-            let filename_ascii = get_filename_by_book(&book, &file_type, true, true);
+            let filename = get_filename_by_book(&book, &file_type, true, false, normalized);
+            let filename_ascii = get_filename_by_book(&book, &file_type, true, true, normalized);
 
             Some(DownloadResult::new(
                 Data::SpooledTempAsyncRead(t),
@@ -198,6 +199,7 @@ pub async fn download_chain(
 pub async fn start_download_futures(
     book: &BookWithRemote,
     file_type: &str,
+    normalized: bool,
 ) -> Option<DownloadResult> {
     let mut tasks = JoinSet::new();
 
@@ -207,6 +209,7 @@ pub async fn start_download_futures(
             file_type.to_string(),
             source_config.clone(),
             false,
+            normalized,
         ));
 
         if file_type == "epub" || file_type == "fb2" {
@@ -215,6 +218,7 @@ pub async fn start_download_futures(
                 file_type.to_string(),
                 source_config.clone(),
                 true,
+                normalized,
             ));
         }
     }
@@ -232,13 +236,14 @@ pub async fn book_download(
     source_id: u32,
     remote_id: u32,
     file_type: &str,
+    normalized: bool,
 ) -> Result<Option<DownloadResult>, Box<dyn std::error::Error + Send + Sync>> {
     let book = match get_remote_book(source_id, remote_id).await {
         Ok(v) => v,
         Err(err) => return Err(err),
     };
 
-    match start_download_futures(&book, file_type).await {
+    match start_download_futures(&book, file_type, normalized).await {
         Some(v) => Ok(Some(v)),
         None => Ok(None),
     }

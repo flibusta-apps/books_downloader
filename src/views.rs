@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::Path,
+    extract::{Path, Query},
     http::{header, StatusCode},
     response::{AppendHeaders, IntoResponse},
 };
@@ -25,13 +25,23 @@ use crate::{
     },
 };
 
+#[derive(serde::Deserialize, Default)]
+pub struct FilenameParams {
+    #[serde(default)]
+    pub normalized: Option<bool>,
+}
+
 pub async fn download(
     Path((source_id, remote_id, file_type)): Path<(u32, u32, String)>,
+    Query(params): Query<FilenameParams>,
 ) -> impl IntoResponse {
-    let download_result = match book_download(source_id, remote_id, file_type.as_str()).await {
-        Ok(v) => v,
-        Err(_) => return Err((StatusCode::NO_CONTENT, "Can't download!".to_string())),
-    };
+    let normalized = params.normalized.unwrap_or(true);
+
+    let download_result =
+        match book_download(source_id, remote_id, file_type.as_str(), normalized).await {
+            Ok(v) => v,
+            Err(_) => return Err((StatusCode::NO_CONTENT, "Can't download!".to_string())),
+        };
 
     let data = match download_result {
         Some(v) => v,
@@ -66,11 +76,16 @@ pub async fn download(
     Ok((headers, Body::from_stream(stream)))
 }
 
-pub async fn get_filename(Path((book_id, file_type)): Path<(u32, String)>) -> impl IntoResponse {
+pub async fn get_filename(
+    Path((book_id, file_type)): Path<(u32, String)>,
+    Query(params): Query<FilenameParams>,
+) -> impl IntoResponse {
+    let normalized = params.normalized.unwrap_or(true);
+
     let (filename, filename_ascii) = match get_book(book_id).await {
         Ok(book) => (
-            get_filename_by_book(&book, file_type.as_str(), false, false),
-            get_filename_by_book(&book, file_type.as_str(), false, true),
+            get_filename_by_book(&book, file_type.as_str(), false, false, normalized),
+            get_filename_by_book(&book, file_type.as_str(), false, true, normalized),
         ),
         Err(_) => return (StatusCode::BAD_REQUEST, "Book not found!".to_string()),
     };
