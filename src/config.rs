@@ -5,6 +5,24 @@ fn get_env(env: &'static str) -> String {
     std::env::var(env).unwrap_or_else(|_| panic!("Cannot get the {} env variable", env))
 }
 
+fn parse_usize_or(raw: Option<&str>, env: &'static str, default: usize) -> usize {
+    match raw {
+        Some(v) => v
+            .parse()
+            .unwrap_or_else(|err| panic!("{env} must be a valid non-negative integer: {err}")),
+        None => default,
+    }
+}
+
+fn parse_u64_or(raw: Option<&str>, env: &'static str, default: u64) -> u64 {
+    match raw {
+        Some(v) => v
+            .parse()
+            .unwrap_or_else(|err| panic!("{env} must be a valid non-negative integer: {err}")),
+        None => default,
+    }
+}
+
 #[derive(Deserialize)]
 struct RawSourceConfig {
     url: String,
@@ -50,6 +68,20 @@ fn parse_fl_sources(raw_json: &str) -> Vec<SourceConfig> {
         .collect()
 }
 
+/// Max bytes buffered from a single mirror response into a temp file.
+/// Configurable via `MAX_DOWNLOAD_BYTES` (default 200 MiB).
+///
+/// Max declared uncompressed bytes / compression ratio allowed for a single
+/// ZIP entry before it is treated as a ZIP bomb and rejected.
+/// Configurable via `MAX_DECOMPRESSED_BYTES` (default 200 MiB) and
+/// `MAX_COMPRESSION_RATIO` (default 100).
+#[derive(Clone, Copy)]
+pub struct DownloadLimits {
+    pub max_download_bytes: usize,
+    pub max_decompressed_bytes: u64,
+    pub max_compression_ratio: u64,
+}
+
 pub struct Config {
     pub api_key: String,
 
@@ -62,6 +94,8 @@ pub struct Config {
     pub converter_api_key: String,
 
     pub sentry_dsn: Option<String>,
+
+    pub download_limits: DownloadLimits,
 }
 
 impl Config {
@@ -78,6 +112,24 @@ impl Config {
             converter_api_key: get_env("CONVERTER_API_KEY"),
 
             sentry_dsn: std::env::var("SENTRY_DSN").ok(),
+
+            download_limits: DownloadLimits {
+                max_download_bytes: parse_usize_or(
+                    std::env::var("MAX_DOWNLOAD_BYTES").ok().as_deref(),
+                    "MAX_DOWNLOAD_BYTES",
+                    200 * 1024 * 1024,
+                ),
+                max_decompressed_bytes: parse_u64_or(
+                    std::env::var("MAX_DECOMPRESSED_BYTES").ok().as_deref(),
+                    "MAX_DECOMPRESSED_BYTES",
+                    200 * 1024 * 1024,
+                ),
+                max_compression_ratio: parse_u64_or(
+                    std::env::var("MAX_COMPRESSION_RATIO").ok().as_deref(),
+                    "MAX_COMPRESSION_RATIO",
+                    100,
+                ),
+            },
         }
     }
 }
@@ -114,5 +166,37 @@ mod tests {
     #[should_panic(expected = "invalid proxy URL")]
     fn invalid_proxy_panics_at_load_time() {
         parse_fl_sources(r#"[{"url": "http://example.com", "proxy": "not a valid proxy url"}]"#);
+    }
+
+    #[test]
+    fn download_limit_missing_value_uses_default() {
+        assert_eq!(parse_usize_or(None, "MAX_DOWNLOAD_BYTES", 42), 42);
+    }
+
+    #[test]
+    fn download_limit_valid_value_overrides_default() {
+        assert_eq!(parse_usize_or(Some("1234"), "MAX_DOWNLOAD_BYTES", 42), 1234);
+    }
+
+    #[test]
+    #[should_panic(expected = "MAX_DOWNLOAD_BYTES must be a valid non-negative integer")]
+    fn download_limit_invalid_value_panics() {
+        parse_usize_or(Some("not-a-number"), "MAX_DOWNLOAD_BYTES", 42);
+    }
+
+    #[test]
+    fn compression_ratio_missing_value_uses_default() {
+        assert_eq!(parse_u64_or(None, "MAX_COMPRESSION_RATIO", 100), 100);
+    }
+
+    #[test]
+    fn compression_ratio_valid_value_overrides_default() {
+        assert_eq!(parse_u64_or(Some("7"), "MAX_COMPRESSION_RATIO", 100), 7);
+    }
+
+    #[test]
+    #[should_panic(expected = "MAX_COMPRESSION_RATIO must be a valid non-negative integer")]
+    fn compression_ratio_invalid_value_panics() {
+        parse_u64_or(Some("nope"), "MAX_COMPRESSION_RATIO", 100);
     }
 }
