@@ -353,4 +353,21 @@ mod tests {
         let (_, is_zip) = result.expect("download should not panic on binary Content-Type");
         assert!(!is_zip);
     }
+
+    #[tokio::test]
+    async fn corrupt_zip_body_returns_none_instead_of_panicking() {
+        let body = b"this is not a zip file";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            std::str::from_utf8(body).unwrap()
+        );
+        let base_url = spawn_raw_server(response.into_bytes()).await;
+        let source_config = make_source_config(base_url);
+        let book = make_book("fb2");
+
+        let result = download_chain(book, "fb2zip".to_string(), source_config, false, true).await;
+
+        assert!(result.is_none());
+    }
 }
