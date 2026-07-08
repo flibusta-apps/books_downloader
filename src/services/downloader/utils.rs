@@ -72,7 +72,10 @@ mod tests {
     #[test]
     fn non_ascii_content_length_returns_none() {
         let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_LENGTH, HeaderValue::from_bytes(&[0xFF, 0xFE]).unwrap());
+        headers.insert(
+            CONTENT_LENGTH,
+            HeaderValue::from_bytes(&[0xFF, 0xFE]).unwrap(),
+        );
         assert_eq!(parse_content_length(&headers), None);
     }
 }

@@ -115,8 +115,7 @@ pub fn get_filename_by_book(
     // Telegram-safe cleanup. Telegram Bot API's `file_name` is limited to 60
     // bytes UTF-8 and rejects some characters outright. We strip the rest
     // so a generated name is always safe to ship.
-    normal_filename = normal_filename
-        .replace(['\\', '|', ':', '*', '"', '<', '>', '?', '!'], "");
+    normal_filename = normal_filename.replace(['\\', '|', ':', '*', '"', '<', '>', '?', '!'], "");
 
     // Telegram reserves 60 bytes for the whole `file_name`; cap the
     // left part at 50 bytes UTF-8 to leave headroom for `.ID.ext(.zip)`.
