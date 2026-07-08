@@ -2,7 +2,6 @@ pub mod types;
 pub mod utils;
 pub mod zip;
 
-use once_cell::sync::Lazy;
 use reqwest::Response;
 use tokio::task::JoinSet;
 
@@ -16,15 +15,12 @@ use super::book_library::types::BookWithRemote;
 use super::covert::convert_file;
 use super::{book_library::get_remote_book, filename_getter::get_filename_by_book};
 
-pub static CLIENT: Lazy<reqwest::Client> = Lazy::new(reqwest::Client::new);
-
 pub async fn download<'a>(
     book_id: &'a u32,
     book_file_type: &'a str,
     source_config: &'a config::SourceConfig,
 ) -> Option<(Response, bool)> {
     let basic_url = &source_config.url;
-    let proxy = &source_config.proxy;
 
     let url = if book_file_type == "fb2" || book_file_type == "epub" || book_file_type == "mobi" {
         format!("{basic_url}/b/{book_id}/{book_file_type}")
@@ -32,18 +28,7 @@ pub async fn download<'a>(
         format!("{basic_url}/b/{book_id}/download")
     };
 
-    let client = match proxy {
-        Some(v) => {
-            let proxy_data = reqwest::Proxy::http(v);
-            reqwest::Client::builder()
-                .proxy(proxy_data.unwrap())
-                .build()
-                .unwrap()
-        }
-        None => CLIENT.clone(),
-    };
-
-    let response = client.get(url).send().await;
+    let response = source_config.client.get(url).send().await;
 
     let response = match response {
         Ok(v) => v,
@@ -266,9 +251,11 @@ mod tests {
     }
 
     fn make_source_config(url: String) -> config::SourceConfig {
-        // NOTE: Task 5 adds a `client` field to `SourceConfig`. When that
-        // task runs, update this helper to `config::SourceConfig { url, proxy: None, client: reqwest::Client::new() }`.
-        config::SourceConfig { url, proxy: None }
+        config::SourceConfig {
+            url,
+            proxy: None,
+            client: reqwest::Client::new(),
+        }
     }
 
     fn make_book(file_type: &str) -> BookWithRemote {
