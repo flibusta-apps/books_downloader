@@ -30,7 +30,7 @@ pub fn unzip(
             }
 
             let mut output_file = tempfile::spooled_tempfile(5 * 1024 * 1024);
-            let mut limited = (&mut file).take(max_decompressed_bytes + 1);
+            let mut limited = (&mut file).take(max_decompressed_bytes.saturating_add(1));
 
             let size: usize = match std::io::copy(&mut limited, &mut output_file) {
                 Ok(v) if v > max_decompressed_bytes => return None,
