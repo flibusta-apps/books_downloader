@@ -65,6 +65,7 @@ pub async fn download_chain(
     source_config: config::SourceConfig,
     converting: bool,
     normalized: bool,
+    limits: config::DownloadLimits,
 ) -> Option<DownloadResult> {
     let final_need_zip = file_type == "fb2zip";
 
@@ -83,10 +84,11 @@ pub async fn download_chain(
     if is_zip && book.file_type.to_lowercase() == "html" {
         let filename = get_filename_by_book(&book, &file_type, true, false, normalized);
         let filename_ascii = get_filename_by_book(&book, &file_type, true, true, normalized);
-        let (data, data_size) = match response_to_download_data(response).await {
-            Some(v) => v,
-            None => return None,
-        };
+        let (data, data_size) =
+            match response_to_download_data(response, limits.max_download_bytes).await {
+                Some(v) => v,
+                None => return None,
+            };
 
         return Some(DownloadResult::new(
             data,
@@ -99,10 +101,11 @@ pub async fn download_chain(
     if !is_zip && !final_need_zip && !converting {
         let filename = get_filename_by_book(&book, &book.file_type, false, false, normalized);
         let filename_ascii = get_filename_by_book(&book, &file_type, false, true, normalized);
-        let (data, data_size) = match response_to_download_data(response).await {
-            Some(v) => v,
-            None => return None,
-        };
+        let (data, data_size) =
+            match response_to_download_data(response, limits.max_download_bytes).await {
+                Some(v) => v,
+                None => return None,
+            };
 
         return Some(DownloadResult::new(
             data,
@@ -113,7 +116,8 @@ pub async fn download_chain(
     };
 
     let (unzipped_temp_file, data_size) = {
-        let temp_file_to_unzip_result = response_to_tempfile(&mut response).await;
+        let temp_file_to_unzip_result =
+            response_to_tempfile(&mut response, limits.max_download_bytes).await;
         let temp_file_to_unzip = match temp_file_to_unzip_result {
             Some(v) => v.0,
             None => return None,
@@ -127,10 +131,12 @@ pub async fn download_chain(
 
     let (mut clean_file, data_size) = if converting {
         match convert_file(unzipped_temp_file, file_type.to_string()).await {
-            Some(mut response) => match response_to_tempfile(&mut response).await {
-                Some(v) => v,
-                None => return None,
-            },
+            Some(mut response) => {
+                match response_to_tempfile(&mut response, limits.max_download_bytes).await {
+                    Some(v) => v,
+                    None => return None,
+                }
+            }
             None => return None,
         }
     } else {
@@ -187,6 +193,7 @@ pub async fn start_download_futures(
             source_config.clone(),
             false,
             normalized,
+            config::CONFIG.download_limits,
         ));
 
         if file_type == "epub" || file_type == "fb2" {
@@ -196,6 +203,7 @@ pub async fn start_download_futures(
                 source_config.clone(),
                 true,
                 normalized,
+                config::CONFIG.download_limits,
             ));
         }
     }
@@ -270,6 +278,14 @@ mod tests {
         }
     }
 
+    fn generous_limits() -> config::DownloadLimits {
+        config::DownloadLimits {
+            max_download_bytes: 5 * 1024 * 1024,
+            max_decompressed_bytes: 5 * 1024 * 1024,
+            max_compression_ratio: 1000,
+        }
+    }
+
     #[tokio::test]
     async fn missing_content_length_falls_back_to_buffering() {
         let body = b"fake fb2 content";
@@ -282,7 +298,15 @@ mod tests {
         let source_config = make_source_config(base_url);
         let book = make_book("fb2");
 
-        let result = download_chain(book, "fb2".to_string(), source_config, false, true).await;
+        let result = download_chain(
+            book,
+            "fb2".to_string(),
+            source_config,
+            false,
+            true,
+            generous_limits(),
+        )
+        .await;
 
         let data = result.expect("download_chain should succeed despite missing Content-Length");
         assert_eq!(data.data_size, body.len());
@@ -301,7 +325,15 @@ mod tests {
         let source_config = make_source_config(base_url);
         let book = make_book("html");
 
-        let result = download_chain(book, "html".to_string(), source_config, false, true).await;
+        let result = download_chain(
+            book,
+            "html".to_string(),
+            source_config,
+            false,
+            true,
+            generous_limits(),
+        )
+        .await;
 
         let data = result.expect("download_chain should succeed despite missing Content-Length");
         assert_eq!(data.data_size, body.len());
@@ -319,7 +351,15 @@ mod tests {
         let source_config = make_source_config(base_url);
         let book = make_book("fb2");
 
-        let result = download_chain(book, "fb2".to_string(), source_config, false, true).await;
+        let result = download_chain(
+            book,
+            "fb2".to_string(),
+            source_config,
+            false,
+            true,
+            generous_limits(),
+        )
+        .await;
 
         let data = result.expect("download_chain should succeed with valid Content-Length");
         assert_eq!(data.data_size, body.len());
@@ -353,7 +393,38 @@ mod tests {
         let source_config = make_source_config(base_url);
         let book = make_book("fb2");
 
-        let result = download_chain(book, "fb2zip".to_string(), source_config, false, true).await;
+        let result = download_chain(
+            book,
+            "fb2zip".to_string(),
+            source_config,
+            false,
+            true,
+            generous_limits(),
+        )
+        .await;
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn oversized_body_without_content_length_is_rejected() {
+        let body = vec![b'a'; 64];
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/fb2\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+            body.len(),
+            std::str::from_utf8(&body).unwrap()
+        );
+        let base_url = spawn_raw_server(response.into_bytes()).await;
+        let source_config = make_source_config(base_url);
+        let book = make_book("fb2");
+        let limits = config::DownloadLimits {
+            max_download_bytes: 10,
+            max_decompressed_bytes: 5 * 1024 * 1024,
+            max_compression_ratio: 1000,
+        };
+
+        let result =
+            download_chain(book, "fb2".to_string(), source_config, false, true, limits).await;
 
         assert!(result.is_none());
     }
