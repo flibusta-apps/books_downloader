@@ -1,7 +1,7 @@
 use reqwest::Response;
 use std::pin::Pin;
 use tempfile::SpooledTempFile;
-use tokio::io::AsyncRead;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use futures::TryStreamExt;
 use tokio_util::io::StreamReader;
@@ -24,6 +24,10 @@ pub fn get_response_async_read(it: Response) -> impl AsyncRead {
     StreamReader::new(stream)
 }
 
+fn limit_async_read<R: AsyncRead>(read: R, limit: u64) -> impl AsyncRead {
+    read.take(limit)
+}
+
 impl DownloadResult {
     pub fn new(data: Data, filename: String, filename_ascii: String, data_size: usize) -> Self {
         Self {
@@ -35,8 +39,10 @@ impl DownloadResult {
     }
 
     pub fn get_async_read(self) -> Pin<Box<dyn AsyncRead + Send>> {
+        let data_size = self.data_size as u64;
+
         match self.data {
-            Data::Response(v) => Box::pin(get_response_async_read(v)),
+            Data::Response(v) => Box::pin(limit_async_read(get_response_async_read(v), data_size)),
             Data::SpooledTempAsyncRead(v) => Box::pin(v),
         }
     }
@@ -67,5 +73,23 @@ impl AsyncRead for SpooledTempAsyncRead {
         buf.set_filled(result);
 
         std::task::Poll::Ready(Ok(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn limit_async_read_truncates_to_declared_length() {
+        let data: &[u8] = b"HELLO WORLD EXTRA BYTES";
+        let mut limited = limit_async_read(data, 5);
+
+        let mut buf = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut limited, &mut buf)
+            .await
+            .unwrap();
+
+        assert_eq!(buf, b"HELLO");
     }
 }

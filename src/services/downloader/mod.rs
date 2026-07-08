@@ -369,6 +369,13 @@ mod tests {
         let data = result.expect("download_chain should succeed with valid Content-Length");
         assert_eq!(data.data_size, body.len());
         assert!(matches!(data.data, Data::Response(_)));
+
+        let mut reader = data.get_async_read();
+        let mut buf = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut buf)
+            .await
+            .unwrap();
+        assert_eq!(buf, body);
     }
 
     #[tokio::test]
