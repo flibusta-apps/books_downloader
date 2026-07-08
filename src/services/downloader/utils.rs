@@ -40,7 +40,10 @@ pub async fn response_to_tempfile(res: &mut Response) -> Option<(SpooledTempFile
             }
         }
 
-        tmp_file.seek(SeekFrom::Start(0)).unwrap();
+        match tmp_file.seek(SeekFrom::Start(0)) {
+            Ok(_) => (),
+            Err(_) => return None,
+        }
     }
 
     Some((tmp_file, data_size))
