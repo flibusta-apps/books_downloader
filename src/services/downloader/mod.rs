@@ -57,7 +57,7 @@ pub async fn download<'a>(
 
     let headers = response.headers();
     let content_type = match headers.get("Content-Type") {
-        Some(v) => v.to_str().unwrap(),
+        Some(v) => v.to_str().unwrap_or(""),
         None => "",
     };
 
@@ -337,5 +337,20 @@ mod tests {
         let data = result.expect("download_chain should succeed with valid Content-Length");
         assert_eq!(data.data_size, body.len());
         assert!(matches!(data.data, Data::Response(_)));
+    }
+
+    #[tokio::test]
+    async fn binary_content_type_does_not_panic() {
+        let mut response = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Type: ".to_vec();
+        response.extend_from_slice(&[0xFF, 0xFE]);
+        response.extend_from_slice(b"\r\n\r\nhello");
+
+        let base_url = spawn_raw_server(response).await;
+        let source_config = make_source_config(base_url);
+
+        let result = download(&1, "fb2", &source_config).await;
+
+        let (_, is_zip) = result.expect("download should not panic on binary Content-Type");
+        assert!(!is_zip);
     }
 }
