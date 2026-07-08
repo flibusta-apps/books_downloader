@@ -7,7 +7,7 @@ use tokio::task::JoinSet;
 
 use crate::config;
 
-use self::types::{Data, DownloadResult, SpooledTempAsyncRead};
+use self::types::{Data, DownloadResult};
 use self::utils::{response_to_download_data, response_to_tempfile};
 use self::zip::{unzip, zip};
 
@@ -123,18 +123,27 @@ pub async fn download_chain(
             None => return None,
         };
 
-        match unzip(
-            temp_file_to_unzip,
-            "fb2",
-            limits.max_decompressed_bytes,
-            limits.max_compression_ratio,
-        ) {
+        let unzip_result = match tokio::task::spawn_blocking(move || {
+            unzip(
+                temp_file_to_unzip,
+                "fb2",
+                limits.max_decompressed_bytes,
+                limits.max_compression_ratio,
+            )
+        })
+        .await
+        {
+            Ok(v) => v,
+            Err(_) => return None,
+        };
+
+        match unzip_result {
             Some(v) => v,
             None => return None,
         }
     };
 
-    let (mut clean_file, data_size) = if converting {
+    let (clean_file, data_size) = if converting {
         match convert_file(unzipped_temp_file, file_type.to_string()).await {
             Some(mut response) => {
                 match response_to_tempfile(&mut response, limits.max_download_bytes).await {
@@ -149,12 +158,11 @@ pub async fn download_chain(
     };
 
     if !final_need_zip {
-        let t = SpooledTempAsyncRead::new(clean_file);
         let filename = get_filename_by_book(&book, &file_type, false, false, normalized);
         let filename_ascii = get_filename_by_book(&book, &file_type, false, true, normalized);
 
         return Some(DownloadResult::new(
-            Data::SpooledTempAsyncRead(t),
+            Data::SpooledTempFile(clean_file),
             filename,
             filename_ascii,
             data_size,
@@ -167,14 +175,19 @@ pub async fn download_chain(
         &file_type
     };
     let filename = get_filename_by_book(&book, t_file_type, false, false, normalized);
-    match zip(&mut clean_file, filename.as_str()) {
+
+    let zip_result = match tokio::task::spawn_blocking(move || zip(clean_file, &filename)).await {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+
+    match zip_result {
         Some((t_file, data_size)) => {
-            let t = SpooledTempAsyncRead::new(t_file);
             let filename = get_filename_by_book(&book, &file_type, true, false, normalized);
             let filename_ascii = get_filename_by_book(&book, &file_type, true, true, normalized);
 
             Some(DownloadResult::new(
-                Data::SpooledTempAsyncRead(t),
+                Data::SpooledTempFile(t_file),
                 filename,
                 filename_ascii,
                 data_size,
@@ -315,7 +328,7 @@ mod tests {
 
         let data = result.expect("download_chain should succeed despite missing Content-Length");
         assert_eq!(data.data_size, body.len());
-        assert!(matches!(data.data, Data::SpooledTempAsyncRead(_)));
+        assert!(matches!(data.data, Data::SpooledTempFile(_)));
     }
 
     #[tokio::test]

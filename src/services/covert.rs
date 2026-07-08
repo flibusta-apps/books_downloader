@@ -4,10 +4,10 @@ use tokio_util::io::ReaderStream;
 
 use crate::config;
 
-use super::downloader::types::SpooledTempAsyncRead;
+use super::downloader::types::spooled_temp_file_into_async_read;
 
 pub async fn convert_file(file: SpooledTempFile, file_type: String) -> Option<Response> {
-    let body = Body::wrap_stream(ReaderStream::new(SpooledTempAsyncRead::new(file)));
+    let body = Body::wrap_stream(ReaderStream::new(spooled_temp_file_into_async_read(file)));
 
     let response = reqwest::Client::new()
         .post(format!("{}{}", config::CONFIG.converter_url, file_type))

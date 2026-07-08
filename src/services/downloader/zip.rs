@@ -47,7 +47,7 @@ pub fn unzip(
     None
 }
 
-pub fn zip(tmp_file: &mut SpooledTempFile, filename: &str) -> Option<(SpooledTempFile, usize)> {
+pub fn zip(mut tmp_file: SpooledTempFile, filename: &str) -> Option<(SpooledTempFile, usize)> {
     let output_file = tempfile::spooled_tempfile(5 * 1024 * 1024);
     let mut archive = zip::ZipWriter::new(output_file);
 
@@ -58,7 +58,7 @@ pub fn zip(tmp_file: &mut SpooledTempFile, filename: &str) -> Option<(SpooledTem
 
     archive.start_file::<&str, ()>(filename, options).ok()?;
 
-    std::io::copy(tmp_file, &mut archive).ok()?;
+    std::io::copy(&mut tmp_file, &mut archive).ok()?;
 
     let mut archive_result = archive.finish().ok()?;
 
@@ -100,7 +100,7 @@ mod tests {
         input.write_all(original).unwrap();
         input.rewind().unwrap();
 
-        let (zipped, zipped_size) = zip(&mut input, "book.fb2").expect("zip should succeed");
+        let (zipped, zipped_size) = zip(input, "book.fb2").expect("zip should succeed");
         assert!(zipped_size > 0);
 
         let (mut unzipped, unzipped_size) =
@@ -120,7 +120,7 @@ mod tests {
         input.write_all(&original).unwrap();
         input.rewind().unwrap();
 
-        let (zipped, _) = zip(&mut input, "book.fb2").expect("zip should succeed");
+        let (zipped, _) = zip(input, "book.fb2").expect("zip should succeed");
 
         let result = unzip(zipped, "fb2", 1024 * 1024, u64::MAX);
 
@@ -134,7 +134,7 @@ mod tests {
         input.write_all(&original).unwrap();
         input.rewind().unwrap();
 
-        let (zipped, zipped_size) = zip(&mut input, "book.fb2").expect("zip should succeed");
+        let (zipped, zipped_size) = zip(input, "book.fb2").expect("zip should succeed");
         assert!(
             zipped_size < original.len() / 20,
             "test fixture must compress well beyond the ratio cap to be meaningful"
