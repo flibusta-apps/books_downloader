@@ -4,6 +4,8 @@ use tempfile::SpooledTempFile;
 
 use std::io::{Seek, SeekFrom, Write};
 
+use super::types::{Data, SpooledTempAsyncRead};
+
 pub fn parse_content_length(headers: &reqwest::header::HeaderMap) -> Option<usize> {
     headers
         .get(reqwest::header::CONTENT_LENGTH)
@@ -42,6 +44,18 @@ pub async fn response_to_tempfile(res: &mut Response) -> Option<(SpooledTempFile
     }
 
     Some((tmp_file, data_size))
+}
+
+pub async fn response_to_download_data(mut response: Response) -> Option<(Data, usize)> {
+    if let Some(size) = parse_content_length(response.headers()) {
+        return Some((Data::Response(response), size));
+    }
+
+    let (tmp_file, size) = response_to_tempfile(&mut response).await?;
+    Some((
+        Data::SpooledTempAsyncRead(SpooledTempAsyncRead::new(tmp_file)),
+        size,
+    ))
 }
 
 #[cfg(test)]
