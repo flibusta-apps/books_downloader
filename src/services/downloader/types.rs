@@ -2,13 +2,14 @@ use reqwest::Response;
 use std::pin::Pin;
 use tempfile::SpooledTempFile;
 use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio_util::io::SyncIoBridge;
 
 use futures::TryStreamExt;
 use tokio_util::io::StreamReader;
 
 pub enum Data {
     Response(Response),
-    SpooledTempAsyncRead(SpooledTempAsyncRead),
+    SpooledTempFile(SpooledTempFile),
 }
 
 pub struct DownloadResult {
@@ -28,6 +29,22 @@ fn limit_async_read<R: AsyncRead>(read: R, limit: u64) -> impl AsyncRead {
     read.take(limit)
 }
 
+/// Streams a `SpooledTempFile` (sync `Read`) into an `AsyncRead` without blocking a
+/// tokio worker thread: the blocking reads run on the blocking pool and are piped
+/// across an in-memory duplex to the async side.
+pub fn spooled_temp_file_into_async_read(
+    mut file: SpooledTempFile,
+) -> Pin<Box<dyn AsyncRead + Send>> {
+    let (async_read, async_write) = tokio::io::duplex(64 * 1024);
+
+    drop(tokio::task::spawn_blocking(move || {
+        let mut writer = SyncIoBridge::new(async_write);
+        std::io::copy(&mut file, &mut writer)
+    }));
+
+    Box::pin(async_read)
+}
+
 impl DownloadResult {
     pub fn new(data: Data, filename: String, filename_ascii: String, data_size: usize) -> Self {
         Self {
@@ -43,36 +60,8 @@ impl DownloadResult {
 
         match self.data {
             Data::Response(v) => Box::pin(limit_async_read(get_response_async_read(v), data_size)),
-            Data::SpooledTempAsyncRead(v) => Box::pin(v),
+            Data::SpooledTempFile(v) => spooled_temp_file_into_async_read(v),
         }
-    }
-}
-
-pub struct SpooledTempAsyncRead {
-    file: SpooledTempFile,
-}
-
-impl SpooledTempAsyncRead {
-    pub fn new(file: SpooledTempFile) -> Self {
-        Self { file }
-    }
-}
-
-impl AsyncRead for SpooledTempAsyncRead {
-    fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        let result = match std::io::Read::read(&mut self.get_mut().file, buf.initialize_unfilled())
-        {
-            Ok(v) => v,
-            Err(err) => return std::task::Poll::Ready(Err(err)),
-        };
-
-        buf.set_filled(result);
-
-        std::task::Poll::Ready(Ok(()))
     }
 }
 
@@ -91,5 +80,25 @@ mod tests {
             .unwrap();
 
         assert_eq!(buf, b"HELLO");
+    }
+
+    #[tokio::test]
+    async fn spooled_temp_file_streams_large_file_byte_identical() {
+        use std::io::{Seek, Write};
+
+        // Larger than the 5 MiB spool threshold, so the temp file rolls over to disk.
+        let original: Vec<u8> = (0..8 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+
+        let mut file = tempfile::spooled_tempfile(5 * 1024 * 1024);
+        file.write_all(&original).unwrap();
+        file.rewind().unwrap();
+
+        let mut reader = spooled_temp_file_into_async_read(file);
+        let mut buf = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut buf)
+            .await
+            .unwrap();
+
+        assert_eq!(buf, original);
     }
 }
