@@ -123,7 +123,12 @@ pub async fn download_chain(
             None => return None,
         };
 
-        match unzip(temp_file_to_unzip, "fb2") {
+        match unzip(
+            temp_file_to_unzip,
+            "fb2",
+            limits.max_decompressed_bytes,
+            limits.max_compression_ratio,
+        ) {
             Some(v) => v,
             None => return None,
         }
