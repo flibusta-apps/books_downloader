@@ -79,11 +79,11 @@ fn parse_fl_sources(raw_json: &str, mirror_request_timeout: Duration) -> Vec<Sou
 }
 
 /// Max bytes buffered from a single mirror response into a temp file.
-/// Configurable via `MAX_DOWNLOAD_BYTES` (default 200 MiB).
+/// Configurable via `MAX_DOWNLOAD_BYTES` (default 512 MiB).
 ///
 /// Max declared uncompressed bytes / compression ratio allowed for a single
 /// ZIP entry before it is treated as a ZIP bomb and rejected.
-/// Configurable via `MAX_DECOMPRESSED_BYTES` (default 200 MiB) and
+/// Configurable via `MAX_DECOMPRESSED_BYTES` (default 512 MiB) and
 /// `MAX_COMPRESSION_RATIO` (default 100).
 #[derive(Clone, Copy)]
 pub struct DownloadLimits {
@@ -137,12 +137,12 @@ impl Config {
                 max_download_bytes: parse_usize_or(
                     std::env::var("MAX_DOWNLOAD_BYTES").ok().as_deref(),
                     "MAX_DOWNLOAD_BYTES",
-                    200 * 1024 * 1024,
+                    512 * 1024 * 1024,
                 ),
                 max_decompressed_bytes: parse_u64_or(
                     std::env::var("MAX_DECOMPRESSED_BYTES").ok().as_deref(),
                     "MAX_DECOMPRESSED_BYTES",
-                    200 * 1024 * 1024,
+                    512 * 1024 * 1024,
                 ),
                 max_compression_ratio: parse_u64_or(
                     std::env::var("MAX_COMPRESSION_RATIO").ok().as_deref(),
