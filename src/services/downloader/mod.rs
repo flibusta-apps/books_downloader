@@ -3,7 +3,6 @@ pub mod utils;
 pub mod zip;
 
 use reqwest::Response;
-use tokio::task::JoinSet;
 
 use crate::config;
 
@@ -201,38 +200,47 @@ pub async fn start_download_futures(
     book: &BookWithRemote,
     file_type: &str,
     normalized: bool,
+    sources: &[config::SourceConfig],
+    limits: config::DownloadLimits,
+    overall_deadline: std::time::Duration,
 ) -> Option<DownloadResult> {
-    let mut tasks = JoinSet::new();
-
-    for source_config in &config::CONFIG.fl_sources {
-        tasks.spawn(download_chain(
-            book.clone(),
-            file_type.to_string(),
-            source_config.clone(),
-            false,
-            normalized,
-            config::CONFIG.download_limits,
-        ));
-
-        if file_type == "epub" || file_type == "fb2" {
-            tasks.spawn(download_chain(
+    let attempt = async {
+        for source_config in sources {
+            if let Some(result) = download_chain(
                 book.clone(),
                 file_type.to_string(),
                 source_config.clone(),
-                true,
+                false,
                 normalized,
-                config::CONFIG.download_limits,
-            ));
-        }
-    }
+                limits,
+            )
+            .await
+            {
+                return Some(result);
+            }
 
-    while let Some(task_result) = tasks.join_next().await {
-        if let Ok(Some(task_result)) = task_result {
-            return Some(task_result);
+            if file_type == "epub" || file_type == "fb2" {
+                if let Some(result) = download_chain(
+                    book.clone(),
+                    file_type.to_string(),
+                    source_config.clone(),
+                    true,
+                    normalized,
+                    limits,
+                )
+                .await
+                {
+                    return Some(result);
+                }
+            }
         }
-    }
 
-    None
+        None
+    };
+
+    tokio::time::timeout(overall_deadline, attempt)
+        .await
+        .unwrap_or(None)
 }
 
 pub async fn book_download(
@@ -246,7 +254,16 @@ pub async fn book_download(
         Err(err) => return Err(err),
     };
 
-    match start_download_futures(&book, file_type, normalized).await {
+    match start_download_futures(
+        &book,
+        file_type,
+        normalized,
+        &config::CONFIG.fl_sources,
+        config::CONFIG.download_limits,
+        config::CONFIG.overall_download_timeout,
+    )
+    .await
+    {
         Some(v) => Ok(Some(v)),
         None => Ok(None),
     }
@@ -302,6 +319,160 @@ mod tests {
             max_decompressed_bytes: 5 * 1024 * 1024,
             max_compression_ratio: 1000,
         }
+    }
+
+    fn make_source_config_with_client(
+        url: String,
+        client: reqwest::Client,
+    ) -> config::SourceConfig {
+        config::SourceConfig {
+            url,
+            proxy: None,
+            client,
+        }
+    }
+
+    async fn spawn_counting_server(
+        response: Vec<u8>,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count_clone = count.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let response = response.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let _ = socket.write_all(&response).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+
+        (format!("http://{addr}"), count)
+    }
+
+    async fn spawn_stalling_server() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                std::future::pending::<()>().await;
+            }
+        });
+
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn direct_success_skips_conversion_attempt() {
+        let body = b"fake epub content";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/epub+zip\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            std::str::from_utf8(body).unwrap()
+        );
+        let (base_url, hit_count) = spawn_counting_server(response.into_bytes()).await;
+        let source_config = make_source_config(base_url);
+        let book = make_book("epub");
+
+        let result = start_download_futures(
+            &book,
+            "epub",
+            true,
+            &[source_config],
+            generous_limits(),
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        assert!(result.is_some());
+        assert_eq!(
+            hit_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "conversion fallback must not be attempted once the direct download succeeds"
+        );
+    }
+
+    #[tokio::test]
+    async fn stalled_mirror_fails_over_to_next_source() {
+        let stalling_url = spawn_stalling_server().await;
+        let stalling_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(200))
+            .build()
+            .unwrap();
+        let stalling_source = make_source_config_with_client(stalling_url, stalling_client);
+
+        let body = b"fake fb2 content";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/fb2\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            std::str::from_utf8(body).unwrap()
+        );
+        let (working_url, _) = spawn_counting_server(response.into_bytes()).await;
+        let working_source = make_source_config(working_url);
+
+        let book = make_book("fb2");
+        let start = tokio::time::Instant::now();
+
+        let result = start_download_futures(
+            &book,
+            "fb2",
+            true,
+            &[stalling_source, working_source],
+            generous_limits(),
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+
+        let elapsed = start.elapsed();
+
+        assert!(result.is_some(), "should fail over to the working mirror");
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "failover should happen once the stalled mirror's own timeout fires, took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn overall_deadline_bounds_total_latency_even_if_all_mirrors_stall() {
+        let stalling_url = spawn_stalling_server().await;
+        let stalling_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap();
+        let stalling_source = make_source_config_with_client(stalling_url, stalling_client);
+
+        let book = make_book("fb2");
+        let start = tokio::time::Instant::now();
+
+        let result = start_download_futures(
+            &book,
+            "fb2",
+            true,
+            &[stalling_source],
+            generous_limits(),
+            std::time::Duration::from_millis(300),
+        )
+        .await;
+
+        let elapsed = start.elapsed();
+
+        assert!(result.is_none());
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "overall deadline should cut the attempt short even though the mirror's own timeout is much longer, took {elapsed:?}"
+        );
     }
 
     #[tokio::test]
