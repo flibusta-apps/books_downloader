@@ -9,7 +9,7 @@ use tokio::task::JoinSet;
 use crate::config;
 
 use self::types::{Data, DownloadResult, SpooledTempAsyncRead};
-use self::utils::response_to_tempfile;
+use self::utils::{response_to_download_data, response_to_tempfile};
 use self::zip::{unzip, zip};
 
 use super::book_library::types::BookWithRemote;
@@ -98,17 +98,13 @@ pub async fn download_chain(
     if is_zip && book.file_type.to_lowercase() == "html" {
         let filename = get_filename_by_book(&book, &file_type, true, false, normalized);
         let filename_ascii = get_filename_by_book(&book, &file_type, true, true, normalized);
-        let data_size: usize = response
-            .headers()
-            .get("Content-Length")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .parse()
-            .unwrap();
+        let (data, data_size) = match response_to_download_data(response).await {
+            Some(v) => v,
+            None => return None,
+        };
 
         return Some(DownloadResult::new(
-            Data::Response(response),
+            data,
             filename,
             filename_ascii,
             data_size,
@@ -118,17 +114,13 @@ pub async fn download_chain(
     if !is_zip && !final_need_zip && !converting {
         let filename = get_filename_by_book(&book, &book.file_type, false, false, normalized);
         let filename_ascii = get_filename_by_book(&book, &file_type, false, true, normalized);
-        let data_size: usize = response
-            .headers()
-            .get("Content-Length")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .parse()
-            .unwrap();
+        let (data, data_size) = match response_to_download_data(response).await {
+            Some(v) => v,
+            None => return None,
+        };
 
         return Some(DownloadResult::new(
-            Data::Response(response),
+            data,
             filename,
             filename_ascii,
             data_size,
@@ -246,5 +238,104 @@ pub async fn book_download(
     match start_download_futures(&book, file_type, normalized).await {
         Some(v) => Ok(Some(v)),
         None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    use crate::services::book_library::types::BookWithRemote;
+
+    async fn spawn_raw_server(response: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket.write_all(&response).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        format!("http://{addr}")
+    }
+
+    fn make_source_config(url: String) -> config::SourceConfig {
+        // NOTE: Task 5 adds a `client` field to `SourceConfig`. When that
+        // task runs, update this helper to `config::SourceConfig { url, proxy: None, client: reqwest::Client::new() }`.
+        config::SourceConfig { url, proxy: None }
+    }
+
+    fn make_book(file_type: &str) -> BookWithRemote {
+        BookWithRemote {
+            id: 1,
+            remote_id: 42,
+            title: "Test Book".to_string(),
+            lang: "ru".to_string(),
+            file_type: file_type.to_string(),
+            uploaded: "2024-01-01".to_string(),
+            authors: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_content_length_falls_back_to_buffering() {
+        let body = b"fake fb2 content";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/fb2\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+            body.len(),
+            std::str::from_utf8(body).unwrap()
+        );
+        let base_url = spawn_raw_server(response.into_bytes()).await;
+        let source_config = make_source_config(base_url);
+        let book = make_book("fb2");
+
+        let result = download_chain(book, "fb2".to_string(), source_config, false, true).await;
+
+        let data = result.expect("download_chain should succeed despite missing Content-Length");
+        assert_eq!(data.data_size, body.len());
+        assert!(matches!(data.data, Data::SpooledTempAsyncRead(_)));
+    }
+
+    #[tokio::test]
+    async fn html_zip_missing_content_length_falls_back_to_buffering() {
+        let body = b"<html>fake</html>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+            body.len(),
+            std::str::from_utf8(body).unwrap()
+        );
+        let base_url = spawn_raw_server(response.into_bytes()).await;
+        let source_config = make_source_config(base_url);
+        let book = make_book("html");
+
+        let result = download_chain(book, "html".to_string(), source_config, false, true).await;
+
+        let data = result.expect("download_chain should succeed despite missing Content-Length");
+        assert_eq!(data.data_size, body.len());
+    }
+
+    #[tokio::test]
+    async fn valid_content_length_streams_without_buffering() {
+        let body = b"fake fb2 content";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/fb2\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            std::str::from_utf8(body).unwrap()
+        );
+        let base_url = spawn_raw_server(response.into_bytes()).await;
+        let source_config = make_source_config(base_url);
+        let book = make_book("fb2");
+
+        let result = download_chain(book, "fb2".to_string(), source_config, false, true).await;
+
+        let data = result.expect("download_chain should succeed with valid Content-Length");
+        assert_eq!(data.data_size, body.len());
+        assert!(matches!(data.data, Data::Response(_)));
     }
 }
