@@ -3,6 +3,8 @@ pub mod utils;
 pub mod zip;
 
 use reqwest::Response;
+use std::time::Instant;
+use tracing::{error, warn};
 
 use crate::config;
 
@@ -27,16 +29,49 @@ pub async fn download<'a>(
         format!("{basic_url}/b/{book_id}/download")
     };
 
+    let fetch_start = Instant::now();
     let response = source_config.client.get(url).send().await;
 
     let response = match response {
         Ok(v) => v,
-        Err(_) => return None,
+        Err(err) => {
+            metrics::counter!(
+                "downloader_source_requests_total",
+                "source" => source_config.url.clone(),
+                "outcome" => "request_error"
+            )
+            .increment(1);
+            warn!(
+                source = %source_config.url,
+                book_id,
+                file_type = book_file_type,
+                stage = "mirror_fetch",
+                error = %err,
+                "mirror request failed"
+            );
+            return None;
+        }
     };
 
     let response = match response.error_for_status() {
         Ok(v) => v,
-        Err(_) => return None,
+        Err(err) => {
+            metrics::counter!(
+                "downloader_source_requests_total",
+                "source" => source_config.url.clone(),
+                "outcome" => "http_error"
+            )
+            .increment(1);
+            warn!(
+                source = %source_config.url,
+                book_id,
+                file_type = book_file_type,
+                stage = "mirror_fetch",
+                error = %err,
+                "mirror returned an error status"
+            );
+            return None;
+        }
     };
 
     let headers = response.headers();
@@ -46,12 +81,42 @@ pub async fn download<'a>(
     };
 
     if book_file_type.to_lowercase() == "html" && content_type.contains("text/html") {
+        metrics::counter!(
+            "downloader_source_requests_total",
+            "source" => source_config.url.clone(),
+            "outcome" => "success"
+        )
+        .increment(1);
+        metrics::histogram!("download_stage_duration_seconds", "stage" => "mirror_fetch")
+            .record(fetch_start.elapsed().as_secs_f64());
         return Some((response, false));
     }
 
     if content_type.contains("text/html") {
+        metrics::counter!(
+            "downloader_source_requests_total",
+            "source" => source_config.url.clone(),
+            "outcome" => "unexpected_html"
+        )
+        .increment(1);
+        warn!(
+            source = %source_config.url,
+            book_id,
+            file_type = book_file_type,
+            stage = "mirror_fetch",
+            "mirror served an HTML page instead of the requested file"
+        );
         return None;
     }
+
+    metrics::counter!(
+        "downloader_source_requests_total",
+        "source" => source_config.url.clone(),
+        "outcome" => "success"
+    )
+    .increment(1);
+    metrics::histogram!("download_stage_duration_seconds", "stage" => "mirror_fetch")
+        .record(fetch_start.elapsed().as_secs_f64());
 
     let is_zip = content_type.contains("application/zip");
 
@@ -86,7 +151,16 @@ pub async fn download_chain(
         let (data, data_size) =
             match response_to_download_data(response, limits.max_download_bytes).await {
                 Some(v) => v,
-                None => return None,
+                None => {
+                    warn!(
+                        source = %source_config.url,
+                        book_id = book.remote_id,
+                        file_type = %file_type,
+                        stage = "buffer_response",
+                        "failed to read HTML archive response body"
+                    );
+                    return None;
+                }
             };
 
         return Some(DownloadResult::new(
@@ -103,7 +177,16 @@ pub async fn download_chain(
         let (data, data_size) =
             match response_to_download_data(response, limits.max_download_bytes).await {
                 Some(v) => v,
-                None => return None,
+                None => {
+                    warn!(
+                        source = %source_config.url,
+                        book_id = book.remote_id,
+                        file_type = %file_type,
+                        stage = "buffer_response",
+                        "failed to read direct download response body"
+                    );
+                    return None;
+                }
             };
 
         return Some(DownloadResult::new(
@@ -119,9 +202,19 @@ pub async fn download_chain(
             response_to_tempfile(&mut response, limits.max_download_bytes).await;
         let temp_file_to_unzip = match temp_file_to_unzip_result {
             Some(v) => v.0,
-            None => return None,
+            None => {
+                warn!(
+                    source = %source_config.url,
+                    book_id = book.remote_id,
+                    file_type = %file_type,
+                    stage = "buffer_response",
+                    "failed to buffer zip response body to a temp file"
+                );
+                return None;
+            }
         };
 
+        let unzip_start = Instant::now();
         let unzip_result = match tokio::task::spawn_blocking(move || {
             unzip(
                 temp_file_to_unzip,
@@ -133,12 +226,35 @@ pub async fn download_chain(
         .await
         {
             Ok(v) => v,
-            Err(_) => return None,
+            Err(err) => {
+                metrics::histogram!("download_stage_duration_seconds", "stage" => "unzip")
+                    .record(unzip_start.elapsed().as_secs_f64());
+                error!(
+                    source = %source_config.url,
+                    book_id = book.remote_id,
+                    file_type = %file_type,
+                    stage = "unzip",
+                    error = %err,
+                    "unzip task panicked"
+                );
+                return None;
+            }
         };
+        metrics::histogram!("download_stage_duration_seconds", "stage" => "unzip")
+            .record(unzip_start.elapsed().as_secs_f64());
 
         match unzip_result {
             Some(v) => v,
-            None => return None,
+            None => {
+                warn!(
+                    source = %source_config.url,
+                    book_id = book.remote_id,
+                    file_type = %file_type,
+                    stage = "unzip",
+                    "no matching entry found in zip archive, or the entry exceeded size/ratio limits"
+                );
+                return None;
+            }
         }
     };
 
@@ -147,7 +263,16 @@ pub async fn download_chain(
             Some(mut response) => {
                 match response_to_tempfile(&mut response, limits.max_download_bytes).await {
                     Some(v) => v,
-                    None => return None,
+                    None => {
+                        warn!(
+                            source = %source_config.url,
+                            book_id = book.remote_id,
+                            file_type = %file_type,
+                            stage = "buffer_response",
+                            "failed to buffer converted response body to a temp file"
+                        );
+                        return None;
+                    }
                 }
             }
             None => return None,
@@ -175,10 +300,25 @@ pub async fn download_chain(
     };
     let filename = get_filename_by_book(&book, t_file_type, false, false, normalized);
 
+    let zip_start = Instant::now();
     let zip_result = match tokio::task::spawn_blocking(move || zip(clean_file, &filename)).await {
         Ok(v) => v,
-        Err(_) => return None,
+        Err(err) => {
+            metrics::histogram!("download_stage_duration_seconds", "stage" => "zip")
+                .record(zip_start.elapsed().as_secs_f64());
+            error!(
+                source = %source_config.url,
+                book_id = book.remote_id,
+                file_type = %file_type,
+                stage = "zip",
+                error = %err,
+                "zip task panicked"
+            );
+            return None;
+        }
     };
+    metrics::histogram!("download_stage_duration_seconds", "stage" => "zip")
+        .record(zip_start.elapsed().as_secs_f64());
 
     match zip_result {
         Some((t_file, data_size)) => {
@@ -192,7 +332,16 @@ pub async fn download_chain(
                 data_size,
             ))
         }
-        None => None,
+        None => {
+            warn!(
+                source = %source_config.url,
+                book_id = book.remote_id,
+                file_type = %file_type,
+                stage = "zip",
+                "failed to create result zip archive"
+            );
+            None
+        }
     }
 }
 
@@ -372,6 +521,61 @@ mod tests {
         });
 
         format!("http://{addr}")
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturingWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl CapturingWriter {
+        fn contents(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    impl std::io::Write for CapturingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturingWriter {
+        type Writer = CapturingWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn find_counter(
+        snapshot: &[(
+            metrics_util::CompositeKey,
+            Option<metrics::Unit>,
+            Option<metrics::SharedString>,
+            metrics_util::debugging::DebugValue,
+        )],
+        metric_name: &str,
+        label_key: &str,
+        label_value: &str,
+    ) -> Option<u64> {
+        snapshot.iter().find_map(|(key, _, _, value)| {
+            let k = key.key();
+            if k.name() != metric_name {
+                return None;
+            }
+            if !k
+                .labels()
+                .any(|l| l.key() == label_key && l.value() == label_value)
+            {
+                return None;
+            }
+            match value {
+                metrics_util::debugging::DebugValue::Counter(n) => Some(*n),
+                _ => None,
+            }
+        })
     }
 
     #[tokio::test]
@@ -623,5 +827,152 @@ mod tests {
             download_chain(book, "fb2".to_string(), source_config, false, true, limits).await;
 
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn mirror_http_error_is_logged_and_counted() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let recorder = metrics_util::debugging::DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let capture = CapturingWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .finish();
+
+        let (result, base_url) = metrics::with_local_recorder(&recorder, || {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            rt.block_on(async {
+                let response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
+                let base_url = spawn_raw_server(response.as_bytes().to_vec()).await;
+                let source_config = make_source_config(base_url.clone());
+                (download(&1, "fb2", &source_config).await, base_url)
+            })
+        });
+
+        assert!(result.is_none());
+
+        let logs = capture.contents();
+        assert!(
+            logs.contains("mirror returned an error status"),
+            "expected the http-error log line, got: {logs}"
+        );
+        assert!(
+            logs.contains(&base_url),
+            "expected the log line to name the source URL, got: {logs}"
+        );
+
+        let snapshot = snapshotter.snapshot().into_vec();
+        assert_eq!(
+            find_counter(
+                &snapshot,
+                "downloader_source_requests_total",
+                "outcome",
+                "http_error"
+            ),
+            Some(1),
+            "expected downloader_source_requests_total{{outcome=\"http_error\"}} == 1, got {snapshot:?}"
+        );
+    }
+
+    #[test]
+    fn mirror_connect_failure_is_logged_and_counted() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let recorder = metrics_util::debugging::DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let capture = CapturingWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .finish();
+
+        // Bind then immediately drop the listener so the port is guaranteed to refuse
+        // connections — a stable way to trigger a connect-level request_error deterministically.
+        let dead_url = rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener);
+            format!("http://{addr}")
+        });
+
+        let result = metrics::with_local_recorder(&recorder, || {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            rt.block_on(async {
+                let source_config = make_source_config(dead_url.clone());
+                download(&1, "fb2", &source_config).await
+            })
+        });
+
+        assert!(result.is_none());
+
+        let logs = capture.contents();
+        assert!(
+            logs.contains("mirror request failed"),
+            "expected the request-error log line, got: {logs}"
+        );
+
+        let snapshot = snapshotter.snapshot().into_vec();
+        assert_eq!(
+            find_counter(
+                &snapshot,
+                "downloader_source_requests_total",
+                "outcome",
+                "request_error"
+            ),
+            Some(1),
+            "expected downloader_source_requests_total{{outcome=\"request_error\"}} == 1, got {snapshot:?}"
+        );
+    }
+
+    #[test]
+    fn unzip_failure_is_logged_with_stage() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let capture = CapturingWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .finish();
+
+        let result = {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            rt.block_on(async {
+                let body = b"this is not a zip file";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    std::str::from_utf8(body).unwrap()
+                );
+                let base_url = spawn_raw_server(response.into_bytes()).await;
+                let source_config = make_source_config(base_url);
+                let book = make_book("fb2");
+
+                download_chain(
+                    book,
+                    "fb2zip".to_string(),
+                    source_config,
+                    false,
+                    true,
+                    generous_limits(),
+                )
+                .await
+            })
+        };
+
+        assert!(result.is_none());
+
+        let logs = capture.contents();
+        assert!(
+            logs.contains("stage=\"unzip\""),
+            "expected an unzip-stage log line, got: {logs}"
+        );
     }
 }
