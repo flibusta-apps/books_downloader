@@ -13,7 +13,16 @@ pub fn parse_content_length(headers: &reqwest::header::HeaderMap) -> Option<usiz
         .and_then(|v| v.parse().ok())
 }
 
-pub async fn response_to_tempfile(res: &mut Response) -> Option<(SpooledTempFile, usize)> {
+pub async fn response_to_tempfile(
+    res: &mut Response,
+    max_bytes: usize,
+) -> Option<(SpooledTempFile, usize)> {
+    if let Some(declared) = res.content_length() {
+        if declared > max_bytes as u64 {
+            return None;
+        }
+    }
+
     let mut tmp_file = tempfile::spooled_tempfile(5 * 1024 * 1024);
 
     let mut data_size: usize = 0;
@@ -34,6 +43,10 @@ pub async fn response_to_tempfile(res: &mut Response) -> Option<(SpooledTempFile
 
             data_size += data.len();
 
+            if data_size > max_bytes {
+                return None;
+            }
+
             match tmp_file.write_all(data.chunk()) {
                 Ok(_) => (),
                 Err(_) => return None,
@@ -49,12 +62,15 @@ pub async fn response_to_tempfile(res: &mut Response) -> Option<(SpooledTempFile
     Some((tmp_file, data_size))
 }
 
-pub async fn response_to_download_data(mut response: Response) -> Option<(Data, usize)> {
+pub async fn response_to_download_data(
+    mut response: Response,
+    max_bytes: usize,
+) -> Option<(Data, usize)> {
     if let Some(size) = parse_content_length(response.headers()) {
         return Some((Data::Response(response), size));
     }
 
-    let (tmp_file, size) = response_to_tempfile(&mut response).await?;
+    let (tmp_file, size) = response_to_tempfile(&mut response, max_bytes).await?;
     Some((
         Data::SpooledTempAsyncRead(SpooledTempAsyncRead::new(tmp_file)),
         size,
