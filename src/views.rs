@@ -20,6 +20,7 @@ use tracing::Level;
 
 use crate::{
     config::CONFIG,
+    file_type::FileType,
     services::{
         book_library::get_book, downloader::book_download, filename_getter::get_filename_by_book,
     },
@@ -32,7 +33,7 @@ pub struct FilenameParams {
 }
 
 pub async fn download(
-    Path((source_id, remote_id, file_type)): Path<(u32, u32, String)>,
+    Path((source_id, remote_id, file_type)): Path<(u32, u32, FileType)>,
     Query(params): Query<FilenameParams>,
 ) -> impl IntoResponse {
     let normalized = params.normalized.unwrap_or(true);
@@ -77,7 +78,7 @@ pub async fn download(
 }
 
 pub async fn get_filename(
-    Path((book_id, file_type)): Path<(u32, String)>,
+    Path((book_id, file_type)): Path<(u32, FileType)>,
     Query(params): Query<FilenameParams>,
 ) -> impl IntoResponse {
     let normalized = params.normalized.unwrap_or(true);

@@ -81,3 +81,118 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod http_tests {
+    use super::*;
+    use axum::{extract::Path, http::StatusCode, routing::get, Router};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use tokio::net::TcpListener;
+
+    async fn spawn_download_route(hits: Arc<AtomicUsize>) -> std::net::SocketAddr {
+        let app = Router::new().route(
+            "/download/{source_id}/{remote_id}/{file_type}",
+            get(move |Path((_, _, _)): Path<(u32, u32, FileType)>| {
+                let hits = hits.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::OK
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        addr
+    }
+
+    async fn spawn_filename_route(hits: Arc<AtomicUsize>) -> std::net::SocketAddr {
+        let app = Router::new().route(
+            "/filename/{book_id}/{file_type}",
+            get(move |Path((_, _)): Path<(u32, FileType)>| {
+                let hits = hits.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::OK
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn download_route_rejects_path_traversal_before_reaching_handler() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let addr = spawn_download_route(hits.clone()).await;
+
+        let resp = reqwest::Client::new()
+            .get(format!("http://{addr}/download/1/1/..%2Fadmin"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "handler must never run for an invalid file_type"
+        );
+    }
+
+    #[tokio::test]
+    async fn download_route_rejects_query_injection_before_reaching_handler() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let addr = spawn_download_route(hits.clone()).await;
+
+        let resp = reqwest::Client::new()
+            .get(format!("http://{addr}/download/1/1/epub%3Fx=y"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn download_route_accepts_allowlisted_file_type() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let addr = spawn_download_route(hits.clone()).await;
+
+        let resp = reqwest::Client::new()
+            .get(format!("http://{addr}/download/1/1/fb2"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn filename_route_rejects_path_traversal_before_reaching_handler() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let addr = spawn_filename_route(hits.clone()).await;
+
+        let resp = reqwest::Client::new()
+            .get(format!("http://{addr}/filename/1/..%2Fadmin"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+    }
+}
