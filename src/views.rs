@@ -155,6 +155,9 @@ pub async fn get_router() -> Router {
 
     let health_router = Router::new().route("/health", get(health));
 
+    // `/metrics` is intentionally unauthenticated (Prometheus scrapers don't send
+    // the API key). It must only be reachable from the internal network/scrape
+    // target — do not expose this port publicly. See docs/specs/02-file-type-validation-and-url-injection.md (02.5).
     let metric_router =
         Router::new().route("/metrics", get(|| async move { metric_handle.render() }));
 
