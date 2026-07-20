@@ -33,6 +33,11 @@ pub struct FilenameParams {
     pub normalized: Option<bool>,
 }
 
+fn content_disposition_value(filename: &str) -> String {
+    let escaped = filename.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("attachment; filename=\"{escaped}\"")
+}
+
 pub async fn download(
     Path((source_id, remote_id, file_type)): Path<(u32, u32, FileType)>,
     Query(params): Query<FilenameParams>,
@@ -62,7 +67,7 @@ pub async fn download(
     let headers = AppendHeaders([
         (
             header::CONTENT_DISPOSITION,
-            format!("attachment; filename={filename_ascii}"),
+            content_disposition_value(&filename_ascii),
         ),
         (header::CONTENT_LENGTH, format!("{file_size}")),
         (
@@ -191,5 +196,46 @@ mod tests {
     #[test]
     fn keys_match_empty_against_empty() {
         assert!(keys_match("", ""));
+    }
+
+    #[test]
+    fn content_disposition_value_quotes_plain_filename() {
+        assert_eq!(
+            content_disposition_value("book.fb2"),
+            "attachment; filename=\"book.fb2\""
+        );
+    }
+
+    #[test]
+    fn content_disposition_value_escapes_quotes_and_backslashes() {
+        let value = content_disposition_value("weird\"na\\me.fb2");
+        assert_eq!(value, "attachment; filename=\"weird\\\"na\\\\me.fb2\"");
+    }
+
+    #[test]
+    fn content_disposition_survives_malicious_title_end_to_end() {
+        use crate::services::book_library::types::BookWithRemote;
+        use crate::services::filename_getter::get_filename_by_book;
+
+        let book = BookWithRemote {
+            id: 1,
+            remote_id: 42,
+            title: "Evil\"; \r\nX-Injected: yes\r\ntitle".to_string(),
+            lang: "en".to_string(),
+            file_type: "fb2".to_string(),
+            uploaded: "2024-01-01".to_string(),
+            authors: vec![],
+        };
+
+        let filename_ascii = get_filename_by_book(&book, "fb2", false, true, true);
+        let value = content_disposition_value(&filename_ascii);
+
+        assert!(
+            header::HeaderValue::from_str(&value).is_ok(),
+            "expected a valid header value, got {value:?}"
+        );
+        assert!(!value.chars().any(|c| c.is_control()));
+        assert!(value.starts_with("attachment; filename=\""));
+        assert!(value.ends_with('"'));
     }
 }

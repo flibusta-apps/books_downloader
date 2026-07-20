@@ -74,9 +74,10 @@ pub fn get_filename_by_book(
     let stripped: String = filename_without_type
         .chars()
         .filter(|c| {
-            !matches!(
-                *c,
-                '(' | ')'
+            !c.is_control()
+                && !matches!(
+                    *c,
+                    '(' | ')'
             | ',' | '.'
             | '\u{2026}' // …
             | '\u{2019}' // ’
@@ -85,7 +86,7 @@ pub fn get_filename_by_book(
             | '?'
             | '\''
             | ':'
-            )
+                )
         })
         .collect();
     filename_without_type = stripped;
@@ -431,5 +432,26 @@ mod tests {
             "filename is {} bytes: {filename}",
             filename.len()
         );
+    }
+
+    #[test]
+    fn control_characters_stripped_when_normalized() {
+        let book = make_book("Title\r\nwith\tcontrol\u{0007}chars", vec![]);
+        let filename = get_filename_by_book(&book, "fb2", false, false, true);
+        assert!(!filename.chars().any(|c| c.is_control()));
+    }
+
+    #[test]
+    fn control_characters_stripped_when_not_normalized() {
+        let book = make_book("Заголовок\r\nс\u{0001}контролем", vec![]);
+        let filename = get_filename_by_book(&book, "fb2", false, false, false);
+        assert!(!filename.chars().any(|c| c.is_control()));
+    }
+
+    #[test]
+    fn control_characters_stripped_from_ascii_variant() {
+        let book = make_book("Evil\"; \r\nX-Injected: yes\r\ntitle", vec![]);
+        let filename = get_filename_by_book(&book, "fb2", false, true, true);
+        assert!(!filename.chars().any(|c| c.is_control()));
     }
 }
