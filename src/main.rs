@@ -1,4 +1,5 @@
 pub mod config;
+pub mod file_type;
 pub mod services;
 pub mod views;
 
