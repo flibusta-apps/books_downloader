@@ -2,7 +2,7 @@ pub mod types;
 pub mod utils;
 pub mod zip;
 
-use reqwest::Response;
+use reqwest::{Response, Url};
 use std::time::Instant;
 use tracing::{error, warn};
 
@@ -23,10 +23,58 @@ pub async fn download<'a>(
 ) -> Option<(Response, bool)> {
     let basic_url = &source_config.url;
 
-    let url = if book_file_type == "fb2" || book_file_type == "epub" || book_file_type == "mobi" {
-        format!("{basic_url}/b/{book_id}/{book_file_type}")
-    } else {
-        format!("{basic_url}/b/{book_id}/download")
+    let mut base = match Url::parse(basic_url) {
+        Ok(v) => v,
+        Err(err) => {
+            metrics::counter!(
+                "downloader_source_requests_total",
+                "source" => source_config.url.clone(),
+                "outcome" => "invalid_base_url"
+            )
+            .increment(1);
+            warn!(
+                source = %source_config.url,
+                book_id,
+                file_type = book_file_type,
+                stage = "mirror_fetch",
+                error = %err,
+                "configured mirror base URL failed to parse"
+            );
+            return None;
+        }
+    };
+
+    if !base.path().ends_with('/') {
+        let path_with_slash = format!("{}/", base.path());
+        base.set_path(&path_with_slash);
+    }
+
+    let relative =
+        if book_file_type == "fb2" || book_file_type == "epub" || book_file_type == "mobi" {
+            format!("b/{book_id}/{book_file_type}")
+        } else {
+            format!("b/{book_id}/download")
+        };
+
+    let url = match base.join(&relative) {
+        Ok(v) => v,
+        Err(err) => {
+            metrics::counter!(
+                "downloader_source_requests_total",
+                "source" => source_config.url.clone(),
+                "outcome" => "invalid_base_url"
+            )
+            .increment(1);
+            warn!(
+                source = %source_config.url,
+                book_id,
+                file_type = book_file_type,
+                stage = "mirror_fetch",
+                error = %err,
+                "failed to join mirror URL"
+            );
+            return None;
+        }
     };
 
     let fetch_start = Instant::now();
@@ -974,5 +1022,47 @@ mod tests {
             logs.contains("stage=\"unzip\""),
             "expected an unzip-stage log line, got: {logs}"
         );
+    }
+
+    #[tokio::test]
+    async fn mirror_request_path_matches_expected_url() {
+        let received: std::sync::Arc<std::sync::Mutex<String>> =
+            std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let received_clone = received.clone();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                if let Ok(n) = socket.read(&mut buf).await {
+                    *received_clone.lock().unwrap() =
+                        String::from_utf8_lossy(&buf[..n]).to_string();
+                }
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        let source_config = make_source_config(format!("http://{addr}"));
+        let _ = download(&42, "fb2", &source_config).await;
+
+        let request = received.lock().unwrap().clone();
+        assert!(
+            request.starts_with("GET /b/42/fb2 "),
+            "expected request path /b/42/fb2, got: {request:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mirror_url_rejects_invalid_base_url_instead_of_panicking() {
+        let source_config = make_source_config("not a valid url".to_string());
+
+        let result = download(&42, "fb2", &source_config).await;
+
+        assert!(result.is_none());
     }
 }
