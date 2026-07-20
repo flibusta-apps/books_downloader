@@ -14,6 +14,7 @@ use axum::{
 use axum_prometheus::PrometheusMetricLayer;
 use base64::{engine::general_purpose, Engine};
 use serde_json::json;
+use subtle::ConstantTimeEq;
 use tokio_util::io::ReaderStream;
 use tower_http::trace::{self, TraceLayer};
 use tracing::Level;
@@ -105,6 +106,17 @@ pub async fn health() -> impl IntoResponse {
     (StatusCode::OK, json!({"status": "healthy"}).to_string())
 }
 
+fn keys_match(provided: &str, expected: &str) -> bool {
+    let provided = provided.as_bytes();
+    let expected = expected.as_bytes();
+
+    if provided.len() != expected.len() {
+        return false;
+    }
+
+    provided.ct_eq(expected).into()
+}
+
 async fn auth(req: Request<axum::body::Body>, next: Next) -> Result<Response, StatusCode> {
     let auth_header = req
         .headers()
@@ -117,7 +129,7 @@ async fn auth(req: Request<axum::body::Body>, next: Next) -> Result<Response, St
         return Err(StatusCode::UNAUTHORIZED);
     };
 
-    if auth_header != CONFIG.api_key {
+    if !keys_match(auth_header, &CONFIG.api_key) {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
@@ -150,4 +162,34 @@ pub async fn get_router() -> Router {
                 .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
                 .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keys_match_identical_strings() {
+        assert!(keys_match("secret-key", "secret-key"));
+    }
+
+    #[test]
+    fn keys_match_rejects_different_strings_of_equal_length() {
+        assert!(!keys_match("secret-key", "other-key1"));
+    }
+
+    #[test]
+    fn keys_match_rejects_different_length() {
+        assert!(!keys_match("short", "much-longer-key"));
+    }
+
+    #[test]
+    fn keys_match_rejects_empty_against_nonempty() {
+        assert!(!keys_match("", "secret-key"));
+    }
+
+    #[test]
+    fn keys_match_empty_against_empty() {
+        assert!(keys_match("", ""));
+    }
 }
