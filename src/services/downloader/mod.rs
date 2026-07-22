@@ -49,12 +49,15 @@ pub async fn download<'a>(
         base.set_path(&path_with_slash);
     }
 
-    let relative =
-        if book_file_type == "fb2" || book_file_type == "epub" || book_file_type == "mobi" {
-            format!("b/{book_id}/{book_file_type}")
-        } else {
-            format!("b/{book_id}/download")
-        };
+    let book_file_type_lower = book_file_type.to_lowercase();
+    let relative = if book_file_type_lower == "fb2"
+        || book_file_type_lower == "epub"
+        || book_file_type_lower == "mobi"
+    {
+        format!("b/{book_id}/{book_file_type}")
+    } else {
+        format!("b/{book_id}/download")
+    };
 
     let url = match base.join(&relative) {
         Ok(v) => v,
@@ -128,7 +131,7 @@ pub async fn download<'a>(
         None => "",
     };
 
-    if book_file_type.to_lowercase() == "html" && content_type.contains("text/html") {
+    if book_file_type_lower == "html" && content_type.contains("text/html") {
         metrics::counter!(
             "downloader_source_requests_total",
             "source" => source_config.url.clone(),
@@ -1021,6 +1024,39 @@ mod tests {
         assert!(
             logs.contains("stage=\"unzip\""),
             "expected an unzip-stage log line, got: {logs}"
+        );
+    }
+
+    #[tokio::test]
+    async fn uppercase_file_type_uses_type_specific_url_not_generic_download() {
+        let received: std::sync::Arc<std::sync::Mutex<String>> =
+            std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let received_clone = received.clone();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                if let Ok(n) = socket.read(&mut buf).await {
+                    *received_clone.lock().unwrap() =
+                        String::from_utf8_lossy(&buf[..n]).to_string();
+                }
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        let source_config = make_source_config(format!("http://{addr}"));
+        let _ = download(&42, "FB2", &source_config).await;
+
+        let request = received.lock().unwrap().clone();
+        assert!(
+            request.starts_with("GET /b/42/FB2 "),
+            "an uppercase FB2 book_file_type must still take the type-specific URL branch, got: {request:?}"
         );
     }
 
