@@ -223,7 +223,7 @@ pub async fn download_chain(
     }
 
     if !is_zip && !final_need_zip && !converting {
-        let filename = get_filename_by_book(&book, &book.file_type, false, false, normalized);
+        let filename = get_filename_by_book(&book, &file_type, false, false, normalized);
         let filename_ascii = get_filename_by_book(&book, &file_type, false, true, normalized);
         let (data, data_size) =
             match response_to_download_data(response, limits.max_download_bytes).await {
@@ -727,6 +727,44 @@ mod tests {
         assert!(
             elapsed < std::time::Duration::from_secs(2),
             "overall deadline should cut the attempt short even though the mirror's own timeout is much longer, took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_download_filename_and_ascii_share_the_requested_extension() {
+        let body = b"fake epub content";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/epub+zip\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            std::str::from_utf8(body).unwrap()
+        );
+        let base_url = spawn_raw_server(response.into_bytes()).await;
+        let source_config = make_source_config(base_url);
+        // The library records this book as "fb2", but the client is requesting "epub"
+        // directly (no conversion) — the served bytes are epub, so both filename headers
+        // must say epub, not fb2.
+        let book = make_book("fb2");
+
+        let result = download_chain(
+            book,
+            "epub".to_string(),
+            source_config,
+            false,
+            true,
+            generous_limits(),
+        )
+        .await;
+
+        let data = result.expect("direct download should succeed");
+        assert!(
+            data.filename.ends_with(".epub"),
+            "filename should use the requested/served type, got {:?}",
+            data.filename
+        );
+        assert!(
+            data.filename_ascii.ends_with(".epub"),
+            "filename_ascii should use the requested/served type, got {:?}",
+            data.filename_ascii
         );
     }
 
