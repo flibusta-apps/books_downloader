@@ -17,7 +17,13 @@ pub fn unzip(
         let mut file = archive.by_index(i).ok()?;
         let filename = file.name();
 
-        if filename.contains(&file_type_lower) || file.name().to_lowercase() == "elector" {
+        let matches_ext = filename
+            .rsplit('.')
+            .next()
+            .map(|ext| ext.eq_ignore_ascii_case(&file_type_lower))
+            .unwrap_or(false);
+
+        if !file.is_dir() && matches_ext {
             let declared_size = file.size();
             let compressed_size = file.compressed_size().max(1);
 
@@ -76,6 +82,68 @@ mod tests {
 
     const GENEROUS_MAX_DECOMPRESSED: u64 = 5 * 1024 * 1024;
     const GENEROUS_MAX_RATIO: u64 = 1000;
+
+    #[test]
+    fn selects_entry_by_extension_not_substring() {
+        let mut archive = zip::ZipWriter::new(tempfile::spooled_tempfile(1024));
+        let options: FileOptions<()> = FileOptions::default();
+
+        archive
+            .start_file::<&str, ()>("cover.fb2.jpg", options)
+            .unwrap();
+        archive.write_all(b"not the fb2 entry").unwrap();
+
+        archive.start_file::<&str, ()>("book.fb2", options).unwrap();
+        archive.write_all(b"fb2 file contents").unwrap();
+
+        let mut zipped = archive.finish().unwrap();
+        zipped.rewind().unwrap();
+
+        let (mut unzipped, size) =
+            unzip(zipped, "fb2", GENEROUS_MAX_DECOMPRESSED, GENEROUS_MAX_RATIO)
+                .expect("should find book.fb2 by extension, not cover.fb2.jpg by substring");
+
+        let mut contents = Vec::new();
+        std::io::Read::read_to_end(&mut unzipped, &mut contents).unwrap();
+        assert_eq!(contents, b"fb2 file contents");
+        assert_eq!(size, contents.len());
+    }
+
+    #[test]
+    fn does_not_match_stray_elector_entry() {
+        let mut archive = zip::ZipWriter::new(tempfile::spooled_tempfile(1024));
+        let options: FileOptions<()> = FileOptions::default();
+
+        archive.start_file::<&str, ()>("elector", options).unwrap();
+        archive.write_all(b"should never match").unwrap();
+
+        let mut zipped = archive.finish().unwrap();
+        zipped.rewind().unwrap();
+
+        let result = unzip(zipped, "fb2", GENEROUS_MAX_DECOMPRESSED, GENEROUS_MAX_RATIO);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn directory_entries_are_skipped() {
+        let mut archive = zip::ZipWriter::new(tempfile::spooled_tempfile(1024));
+        let options: FileOptions<()> = FileOptions::default();
+
+        archive.add_directory("fb2", options).unwrap();
+        archive.start_file::<&str, ()>("real.fb2", options).unwrap();
+        archive.write_all(b"real fb2 contents").unwrap();
+
+        let mut zipped = archive.finish().unwrap();
+        zipped.rewind().unwrap();
+
+        let (mut unzipped, _size) =
+            unzip(zipped, "fb2", GENEROUS_MAX_DECOMPRESSED, GENEROUS_MAX_RATIO)
+                .expect("should skip the directory and find real.fb2");
+
+        let mut contents = Vec::new();
+        std::io::Read::read_to_end(&mut unzipped, &mut contents).unwrap();
+        assert_eq!(contents, b"real fb2 contents");
+    }
 
     #[test]
     fn corrupt_zip_bytes_return_none_instead_of_panicking() {
