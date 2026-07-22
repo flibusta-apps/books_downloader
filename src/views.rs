@@ -46,15 +46,13 @@ pub async fn download(
 ) -> impl IntoResponse {
     let normalized = params.normalized.unwrap_or(true);
 
-    let download_result =
-        match book_download(source_id, remote_id, file_type.as_str(), normalized).await {
-            Ok(v) => v,
-            Err(_) => return Err((StatusCode::NO_CONTENT, "Can't download!".to_string())),
-        };
-
-    let data = match download_result {
-        Some(v) => v,
-        None => return Err((StatusCode::NO_CONTENT, "Can't download!".to_string())),
+    // TODO(Task 6, spec 05): differentiate DownloadError variants into distinct HTTP
+    // statuses. This still collapses every error to 204 as a compile-compat shim now
+    // that `book_download` returns `Result<DownloadResult, DownloadError>` directly
+    // instead of `Result<Option<DownloadResult>, _>`.
+    let data = match book_download(source_id, remote_id, file_type.as_str(), normalized).await {
+        Ok(v) => v,
+        Err(_) => return Err((StatusCode::NO_CONTENT, "Can't download!".to_string())),
     };
 
     let filename = data.filename.clone();

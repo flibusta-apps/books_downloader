@@ -4,6 +4,7 @@ use tempfile::SpooledTempFile;
 
 use std::io::{Seek, SeekFrom, Write};
 
+use super::error::DownloadError;
 use super::types::Data;
 
 pub fn parse_content_length(headers: &reqwest::header::HeaderMap) -> Option<usize> {
@@ -16,10 +17,10 @@ pub fn parse_content_length(headers: &reqwest::header::HeaderMap) -> Option<usiz
 pub async fn response_to_tempfile(
     res: &mut Response,
     max_bytes: usize,
-) -> Option<(SpooledTempFile, usize)> {
+) -> Result<(SpooledTempFile, usize), DownloadError> {
     if let Some(declared) = res.content_length() {
         if declared > max_bytes as u64 {
-            return None;
+            return Err(DownloadError::SourceUnavailable);
         }
     }
 
@@ -33,7 +34,7 @@ pub async fn response_to_tempfile(
 
             let result = match chunk {
                 Ok(v) => v,
-                Err(_) => return None,
+                Err(_) => return Err(DownloadError::SourceUnavailable),
             };
 
             let data = match result {
@@ -44,34 +45,34 @@ pub async fn response_to_tempfile(
             data_size += data.len();
 
             if data_size > max_bytes {
-                return None;
+                return Err(DownloadError::SourceUnavailable);
             }
 
             match tmp_file.write_all(data.chunk()) {
                 Ok(_) => (),
-                Err(_) => return None,
+                Err(_) => return Err(DownloadError::SourceUnavailable),
             }
         }
 
         match tmp_file.seek(SeekFrom::Start(0)) {
             Ok(_) => (),
-            Err(_) => return None,
+            Err(_) => return Err(DownloadError::SourceUnavailable),
         }
     }
 
-    Some((tmp_file, data_size))
+    Ok((tmp_file, data_size))
 }
 
 pub async fn response_to_download_data(
     mut response: Response,
     max_bytes: usize,
-) -> Option<(Data, usize)> {
+) -> Result<(Data, usize), DownloadError> {
     if let Some(size) = parse_content_length(response.headers()) {
-        return Some((Data::Response(response), size));
+        return Ok((Data::Response(response), size));
     }
 
     let (tmp_file, size) = response_to_tempfile(&mut response, max_bytes).await?;
-    Some((Data::SpooledTempFile(tmp_file), size))
+    Ok((Data::SpooledTempFile(tmp_file), size))
 }
 
 #[cfg(test)]

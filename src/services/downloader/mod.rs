@@ -1,3 +1,4 @@
+pub mod error;
 pub mod types;
 pub mod utils;
 pub mod zip;
@@ -8,6 +9,7 @@ use tracing::{error, warn};
 
 use crate::config;
 
+use self::error::DownloadError;
 use self::types::{Data, DownloadResult};
 use self::utils::{response_to_download_data, response_to_tempfile};
 use self::zip::{unzip, zip};
@@ -20,7 +22,7 @@ pub async fn download<'a>(
     book_id: &'a u32,
     book_file_type: &'a str,
     source_config: &'a config::SourceConfig,
-) -> Option<(Response, bool)> {
+) -> Result<(Response, bool), DownloadError> {
     let basic_url = &source_config.url;
 
     let mut base = match Url::parse(basic_url) {
@@ -40,7 +42,7 @@ pub async fn download<'a>(
                 error = %err,
                 "configured mirror base URL failed to parse"
             );
-            return None;
+            return Err(DownloadError::SourceUnavailable);
         }
     };
 
@@ -76,7 +78,7 @@ pub async fn download<'a>(
                 error = %err,
                 "failed to join mirror URL"
             );
-            return None;
+            return Err(DownloadError::SourceUnavailable);
         }
     };
 
@@ -100,7 +102,7 @@ pub async fn download<'a>(
                 error = %err,
                 "mirror request failed"
             );
-            return None;
+            return Err(DownloadError::SourceUnavailable);
         }
     };
 
@@ -121,7 +123,7 @@ pub async fn download<'a>(
                 error = %err,
                 "mirror returned an error status"
             );
-            return None;
+            return Err(DownloadError::SourceUnavailable);
         }
     };
 
@@ -140,7 +142,7 @@ pub async fn download<'a>(
         .increment(1);
         metrics::histogram!("download_stage_duration_seconds", "stage" => "mirror_fetch")
             .record(fetch_start.elapsed().as_secs_f64());
-        return Some((response, false));
+        return Ok((response, false));
     }
 
     if content_type.contains("text/html") {
@@ -157,7 +159,7 @@ pub async fn download<'a>(
             stage = "mirror_fetch",
             "mirror served an HTML page instead of the requested file"
         );
-        return None;
+        return Err(DownloadError::SourceUnavailable);
     }
 
     metrics::counter!(
@@ -171,7 +173,7 @@ pub async fn download<'a>(
 
     let is_zip = content_type.contains("application/zip");
 
-    Some((response, is_zip))
+    Ok((response, is_zip))
 }
 
 pub async fn download_chain(
@@ -181,7 +183,7 @@ pub async fn download_chain(
     converting: bool,
     normalized: bool,
     limits: config::DownloadLimits,
-) -> Option<DownloadResult> {
+) -> Result<DownloadResult, DownloadError> {
     let final_need_zip = file_type == "fb2zip";
 
     let file_type_ = if converting {
@@ -190,31 +192,24 @@ pub async fn download_chain(
         file_type.clone()
     };
 
-    let (mut response, is_zip) = match download(&book.remote_id, &file_type_, &source_config).await
-    {
-        Some(v) => v,
-        None => return None,
-    };
+    let (mut response, is_zip) = download(&book.remote_id, &file_type_, &source_config).await?;
 
     if is_zip && book.file_type.to_lowercase() == "html" {
         let filename = get_filename_by_book(&book, &file_type, true, false, normalized);
         let filename_ascii = get_filename_by_book(&book, &file_type, true, true, normalized);
-        let (data, data_size) =
-            match response_to_download_data(response, limits.max_download_bytes).await {
-                Some(v) => v,
-                None => {
-                    warn!(
-                        source = %source_config.url,
-                        book_id = book.remote_id,
-                        file_type = %file_type,
-                        stage = "buffer_response",
-                        "failed to read HTML archive response body"
-                    );
-                    return None;
-                }
-            };
+        let (data, data_size) = response_to_download_data(response, limits.max_download_bytes)
+            .await
+            .inspect_err(|_| {
+                warn!(
+                    source = %source_config.url,
+                    book_id = book.remote_id,
+                    file_type = %file_type,
+                    stage = "buffer_response",
+                    "failed to read HTML archive response body"
+                );
+            })?;
 
-        return Some(DownloadResult::new(
+        return Ok(DownloadResult::new(
             data,
             filename,
             filename_ascii,
@@ -225,22 +220,19 @@ pub async fn download_chain(
     if !is_zip && !final_need_zip && !converting {
         let filename = get_filename_by_book(&book, &file_type, false, false, normalized);
         let filename_ascii = get_filename_by_book(&book, &file_type, false, true, normalized);
-        let (data, data_size) =
-            match response_to_download_data(response, limits.max_download_bytes).await {
-                Some(v) => v,
-                None => {
-                    warn!(
-                        source = %source_config.url,
-                        book_id = book.remote_id,
-                        file_type = %file_type,
-                        stage = "buffer_response",
-                        "failed to read direct download response body"
-                    );
-                    return None;
-                }
-            };
+        let (data, data_size) = response_to_download_data(response, limits.max_download_bytes)
+            .await
+            .inspect_err(|_| {
+                warn!(
+                    source = %source_config.url,
+                    book_id = book.remote_id,
+                    file_type = %file_type,
+                    stage = "buffer_response",
+                    "failed to read direct download response body"
+                );
+            })?;
 
-        return Some(DownloadResult::new(
+        return Ok(DownloadResult::new(
             data,
             filename,
             filename_ascii,
@@ -249,21 +241,18 @@ pub async fn download_chain(
     };
 
     let (unzipped_temp_file, data_size) = {
-        let temp_file_to_unzip_result =
-            response_to_tempfile(&mut response, limits.max_download_bytes).await;
-        let temp_file_to_unzip = match temp_file_to_unzip_result {
-            Some(v) => v.0,
-            None => {
-                warn!(
-                    source = %source_config.url,
-                    book_id = book.remote_id,
-                    file_type = %file_type,
-                    stage = "buffer_response",
-                    "failed to buffer zip response body to a temp file"
-                );
-                return None;
-            }
-        };
+        let (temp_file_to_unzip, _) =
+            response_to_tempfile(&mut response, limits.max_download_bytes)
+                .await
+                .inspect_err(|_| {
+                    warn!(
+                        source = %source_config.url,
+                        book_id = book.remote_id,
+                        file_type = %file_type,
+                        stage = "buffer_response",
+                        "failed to buffer zip response body to a temp file"
+                    );
+                })?;
 
         let unzip_start = Instant::now();
         let unzip_result = match tokio::task::spawn_blocking(move || {
@@ -288,46 +277,54 @@ pub async fn download_chain(
                     error = %err,
                     "unzip task panicked"
                 );
-                return None;
+                return Err(DownloadError::Internal("unzip task panicked".to_string()));
             }
         };
         metrics::histogram!("download_stage_duration_seconds", "stage" => "unzip")
             .record(unzip_start.elapsed().as_secs_f64());
 
         match unzip_result {
-            Some(v) => v,
-            None => {
+            Ok(v) => v,
+            Err(err) => {
                 warn!(
                     source = %source_config.url,
                     book_id = book.remote_id,
                     file_type = %file_type,
                     stage = "unzip",
+                    error = %err,
                     "no matching entry found in zip archive, or the entry exceeded size/ratio limits"
                 );
-                return None;
+                return Err(err);
             }
         }
     };
 
     let (clean_file, data_size) = if converting {
-        match convert_file(unzipped_temp_file, file_type.to_string()).await {
-            Some(mut response) => {
-                match response_to_tempfile(&mut response, limits.max_download_bytes).await {
-                    Some(v) => v,
-                    None => {
-                        warn!(
-                            source = %source_config.url,
-                            book_id = book.remote_id,
-                            file_type = %file_type,
-                            stage = "buffer_response",
-                            "failed to buffer converted response body to a temp file"
-                        );
-                        return None;
-                    }
-                }
-            }
-            None => return None,
-        }
+        let mut converted = convert_file(unzipped_temp_file, file_type.to_string())
+            .await
+            .map_err(|err| {
+                warn!(
+                    source = %source_config.url,
+                    book_id = book.remote_id,
+                    file_type = %file_type,
+                    stage = "convert",
+                    error = %err,
+                    "converter request failed"
+                );
+                err
+            })?;
+
+        response_to_tempfile(&mut converted, limits.max_download_bytes)
+            .await
+            .inspect_err(|_| {
+                warn!(
+                    source = %source_config.url,
+                    book_id = book.remote_id,
+                    file_type = %file_type,
+                    stage = "buffer_response",
+                    "failed to buffer converted response body to a temp file"
+                );
+            })?
     } else {
         (unzipped_temp_file, data_size)
     };
@@ -336,7 +333,7 @@ pub async fn download_chain(
         let filename = get_filename_by_book(&book, &file_type, false, false, normalized);
         let filename_ascii = get_filename_by_book(&book, &file_type, false, true, normalized);
 
-        return Some(DownloadResult::new(
+        return Ok(DownloadResult::new(
             Data::SpooledTempFile(clean_file),
             filename,
             filename_ascii,
@@ -365,33 +362,34 @@ pub async fn download_chain(
                 error = %err,
                 "zip task panicked"
             );
-            return None;
+            return Err(DownloadError::Internal("zip task panicked".to_string()));
         }
     };
     metrics::histogram!("download_stage_duration_seconds", "stage" => "zip")
         .record(zip_start.elapsed().as_secs_f64());
 
     match zip_result {
-        Some((t_file, data_size)) => {
+        Ok((t_file, data_size)) => {
             let filename = get_filename_by_book(&book, &file_type, true, false, normalized);
             let filename_ascii = get_filename_by_book(&book, &file_type, true, true, normalized);
 
-            Some(DownloadResult::new(
+            Ok(DownloadResult::new(
                 Data::SpooledTempFile(t_file),
                 filename,
                 filename_ascii,
                 data_size,
             ))
         }
-        None => {
+        Err(err) => {
             warn!(
                 source = %source_config.url,
                 book_id = book.remote_id,
                 file_type = %file_type,
                 stage = "zip",
+                error = %err,
                 "failed to create result zip archive"
             );
-            None
+            Err(err)
         }
     }
 }
@@ -403,10 +401,12 @@ pub async fn start_download_futures(
     sources: &[config::SourceConfig],
     limits: config::DownloadLimits,
     overall_deadline: std::time::Duration,
-) -> Option<DownloadResult> {
+) -> Result<DownloadResult, DownloadError> {
     let attempt = async {
+        let mut last_err = DownloadError::SourceUnavailable;
+
         for source_config in sources {
-            if let Some(result) = download_chain(
+            match download_chain(
                 book.clone(),
                 file_type.to_string(),
                 source_config.clone(),
@@ -416,11 +416,12 @@ pub async fn start_download_futures(
             )
             .await
             {
-                return Some(result);
+                Ok(result) => return Ok(result),
+                Err(err) => last_err = err,
             }
 
             if file_type == "epub" || file_type == "fb2" {
-                if let Some(result) = download_chain(
+                match download_chain(
                     book.clone(),
                     file_type.to_string(),
                     source_config.clone(),
@@ -430,17 +431,19 @@ pub async fn start_download_futures(
                 )
                 .await
                 {
-                    return Some(result);
+                    Ok(result) => return Ok(result),
+                    Err(err) => last_err = err,
                 }
             }
         }
 
-        None
+        Err(last_err)
     };
 
-    tokio::time::timeout(overall_deadline, attempt)
-        .await
-        .unwrap_or(None)
+    match tokio::time::timeout(overall_deadline, attempt).await {
+        Ok(result) => result,
+        Err(_) => Err(DownloadError::Timeout),
+    }
 }
 
 pub async fn book_download(
@@ -448,13 +451,10 @@ pub async fn book_download(
     remote_id: u32,
     file_type: &str,
     normalized: bool,
-) -> Result<Option<DownloadResult>, Box<dyn std::error::Error + Send + Sync>> {
-    let book = match get_remote_book(source_id, remote_id).await {
-        Ok(v) => v,
-        Err(err) => return Err(Box::new(err)),
-    };
+) -> Result<DownloadResult, DownloadError> {
+    let book = get_remote_book(source_id, remote_id).await?;
 
-    match start_download_futures(
+    start_download_futures(
         &book,
         file_type,
         normalized,
@@ -463,10 +463,6 @@ pub async fn book_download(
         config::CONFIG.overall_download_timeout,
     )
     .await
-    {
-        Some(v) => Ok(Some(v)),
-        None => Ok(None),
-    }
 }
 
 #[cfg(test)]
@@ -651,7 +647,7 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_some());
+        assert!(result.is_ok());
         assert_eq!(
             hit_count.load(std::sync::atomic::Ordering::SeqCst),
             1,
@@ -692,7 +688,7 @@ mod tests {
 
         let elapsed = start.elapsed();
 
-        assert!(result.is_some(), "should fail over to the working mirror");
+        assert!(result.is_ok(), "should fail over to the working mirror");
         assert!(
             elapsed < std::time::Duration::from_secs(2),
             "failover should happen once the stalled mirror's own timeout fires, took {elapsed:?}"
@@ -723,7 +719,7 @@ mod tests {
 
         let elapsed = start.elapsed();
 
-        assert!(result.is_none());
+        assert!(matches!(result, Err(DownloadError::Timeout)));
         assert!(
             elapsed < std::time::Duration::from_secs(2),
             "overall deadline should cut the attempt short even though the mirror's own timeout is much longer, took {elapsed:?}"
@@ -871,7 +867,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn corrupt_zip_body_returns_none_instead_of_panicking() {
+    async fn corrupt_zip_body_returns_err_instead_of_panicking() {
         let body = b"this is not a zip file";
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n{}",
@@ -892,7 +888,7 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_none());
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -915,7 +911,7 @@ mod tests {
         let result =
             download_chain(book, "fb2".to_string(), source_config, false, true, limits).await;
 
-        assert!(result.is_none());
+        assert!(result.is_err());
     }
 
     #[test]
@@ -942,7 +938,7 @@ mod tests {
             })
         });
 
-        assert!(result.is_none());
+        assert!(result.is_err());
 
         let logs = capture.contents();
         assert!(
@@ -998,7 +994,7 @@ mod tests {
             })
         });
 
-        assert!(result.is_none());
+        assert!(result.is_err());
 
         let logs = capture.contents();
         assert!(
@@ -1056,7 +1052,7 @@ mod tests {
             })
         };
 
-        assert!(result.is_none());
+        assert!(result.is_err());
 
         let logs = capture.contents();
         assert!(
@@ -1137,6 +1133,6 @@ mod tests {
 
         let result = download(&42, "fb2", &source_config).await;
 
-        assert!(result.is_none());
+        assert!(result.is_err());
     }
 }

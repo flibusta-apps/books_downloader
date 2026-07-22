@@ -3,18 +3,20 @@ use std::io::{Read, Seek};
 use tempfile::SpooledTempFile;
 use zip::write::FileOptions;
 
+use super::error::DownloadError;
+
 pub fn unzip(
     tmp_file: SpooledTempFile,
     file_type: &str,
     max_decompressed_bytes: u64,
     max_compression_ratio: u64,
-) -> Option<(SpooledTempFile, usize)> {
-    let mut archive = zip::ZipArchive::new(tmp_file).ok()?;
+) -> Result<(SpooledTempFile, usize), DownloadError> {
+    let mut archive = zip::ZipArchive::new(tmp_file).map_err(|_| DownloadError::BadArchive)?;
 
     let file_type_lower = file_type.to_lowercase();
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i).ok()?;
+        let mut file = archive.by_index(i).map_err(|_| DownloadError::BadArchive)?;
         let filename = file.name();
 
         let matches_ext = filename
@@ -28,32 +30,37 @@ pub fn unzip(
             let compressed_size = file.compressed_size().max(1);
 
             if declared_size > max_decompressed_bytes {
-                return None;
+                return Err(DownloadError::BadArchive);
             }
 
             if declared_size / compressed_size > max_compression_ratio {
-                return None;
+                return Err(DownloadError::BadArchive);
             }
 
             let mut output_file = tempfile::spooled_tempfile(5 * 1024 * 1024);
             let mut limited = (&mut file).take(max_decompressed_bytes.saturating_add(1));
 
             let size: usize = match std::io::copy(&mut limited, &mut output_file) {
-                Ok(v) if v > max_decompressed_bytes => return None,
-                Ok(v) => v.try_into().ok()?,
-                Err(_) => return None,
+                Ok(v) if v > max_decompressed_bytes => return Err(DownloadError::BadArchive),
+                Ok(v) => v.try_into().map_err(|_| DownloadError::BadArchive)?,
+                Err(_) => return Err(DownloadError::BadArchive),
             };
 
-            output_file.rewind().ok()?;
+            output_file
+                .rewind()
+                .map_err(|_| DownloadError::BadArchive)?;
 
-            return Some((output_file, size));
+            return Ok((output_file, size));
         }
     }
 
-    None
+    Err(DownloadError::BadArchive)
 }
 
-pub fn zip(mut tmp_file: SpooledTempFile, filename: &str) -> Option<(SpooledTempFile, usize)> {
+pub fn zip(
+    mut tmp_file: SpooledTempFile,
+    filename: &str,
+) -> Result<(SpooledTempFile, usize), DownloadError> {
     let output_file = tempfile::spooled_tempfile(5 * 1024 * 1024);
     let mut archive = zip::ZipWriter::new(output_file);
 
@@ -62,17 +69,28 @@ pub fn zip(mut tmp_file: SpooledTempFile, filename: &str) -> Option<(SpooledTemp
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o755);
 
-    archive.start_file::<&str, ()>(filename, options).ok()?;
+    archive
+        .start_file::<&str, ()>(filename, options)
+        .map_err(|_| DownloadError::Internal("failed to start zip entry".to_string()))?;
 
-    std::io::copy(&mut tmp_file, &mut archive).ok()?;
+    std::io::copy(&mut tmp_file, &mut archive)
+        .map_err(|_| DownloadError::Internal("failed to write zip entry".to_string()))?;
 
-    let mut archive_result = archive.finish().ok()?;
+    let mut archive_result = archive
+        .finish()
+        .map_err(|_| DownloadError::Internal("failed to finalize zip archive".to_string()))?;
 
-    let data_size: usize = archive_result.stream_position().ok()?.try_into().ok()?;
+    let data_size: usize = archive_result
+        .stream_position()
+        .map_err(|_| DownloadError::Internal("failed to read zip archive size".to_string()))?
+        .try_into()
+        .map_err(|_| DownloadError::Internal("zip archive size overflow".to_string()))?;
 
-    archive_result.rewind().ok()?;
+    archive_result
+        .rewind()
+        .map_err(|_| DownloadError::Internal("failed to rewind zip archive".to_string()))?;
 
-    Some((archive_result, data_size))
+    Ok((archive_result, data_size))
 }
 
 #[cfg(test)]
@@ -121,7 +139,7 @@ mod tests {
         zipped.rewind().unwrap();
 
         let result = unzip(zipped, "fb2", GENEROUS_MAX_DECOMPRESSED, GENEROUS_MAX_RATIO);
-        assert!(result.is_none());
+        assert!(result.is_err());
     }
 
     #[test]
@@ -158,7 +176,7 @@ mod tests {
             GENEROUS_MAX_RATIO,
         );
 
-        assert!(result.is_none());
+        assert!(result.is_err());
     }
 
     #[test]
@@ -192,7 +210,7 @@ mod tests {
 
         let result = unzip(zipped, "fb2", 1024 * 1024, u64::MAX);
 
-        assert!(result.is_none());
+        assert!(result.is_err());
     }
 
     #[test]
@@ -210,6 +228,6 @@ mod tests {
 
         let result = unzip(zipped, "fb2", u64::MAX, 10);
 
-        assert!(result.is_none());
+        assert!(result.is_err());
     }
 }
