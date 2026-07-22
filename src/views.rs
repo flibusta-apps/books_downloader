@@ -24,7 +24,7 @@ use crate::{
     file_type::FileType,
     services::{
         book_library::{error::BookLibraryError, get_book},
-        downloader::book_download,
+        downloader::{book_download, error::DownloadError},
         filename_getter::get_filename_by_book,
     },
 };
@@ -40,20 +40,87 @@ fn content_disposition_value(filename: &str) -> String {
     format!("attachment; filename=\"{escaped}\"")
 }
 
+// `pub` (not module-private) purely to satisfy the `private_interfaces` lint: `download`
+// and `get_filename` are `pub async fn` (an existing, pre-Task-6 pattern), and this crate
+// has no `[lib]` target, so `pub` here still doesn't leak `AppError` past the binary.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AppError {
+    NotFound,
+    SourceUnavailable,
+    BadArchive,
+    ConverterFailed(u16),
+    Timeout,
+    UpstreamError,
+    Internal,
+}
+
+impl AppError {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            AppError::NotFound => StatusCode::NOT_FOUND,
+            AppError::Timeout => StatusCode::GATEWAY_TIMEOUT,
+            AppError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::SourceUnavailable
+            | AppError::BadArchive
+            | AppError::ConverterFailed(_)
+            | AppError::UpstreamError => StatusCode::BAD_GATEWAY,
+        }
+    }
+
+    fn message(&self) -> String {
+        match self {
+            AppError::NotFound => "Book not found".to_string(),
+            AppError::SourceUnavailable => "Upstream source unavailable".to_string(),
+            AppError::BadArchive => "Downloaded archive was invalid".to_string(),
+            AppError::ConverterFailed(status) => format!("Converter failed with status {status}"),
+            AppError::Timeout => "Download timed out".to_string(),
+            AppError::UpstreamError => "book_library is unavailable".to_string(),
+            AppError::Internal => "Internal error".to_string(),
+        }
+    }
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let status = self.status_code();
+        let body = json!({ "error": self.message() }).to_string();
+        (status, body).into_response()
+    }
+}
+
+impl From<BookLibraryError> for AppError {
+    fn from(err: BookLibraryError) -> Self {
+        match err {
+            BookLibraryError::NotFound => AppError::NotFound,
+            BookLibraryError::RequestFailed(_) | BookLibraryError::UpstreamError(_) => {
+                AppError::UpstreamError
+            }
+        }
+    }
+}
+
+impl From<DownloadError> for AppError {
+    fn from(err: DownloadError) -> Self {
+        match err {
+            DownloadError::Library(lib_err) => AppError::from(lib_err),
+            DownloadError::SourceUnavailable => AppError::SourceUnavailable,
+            DownloadError::BadArchive => AppError::BadArchive,
+            DownloadError::ConverterFailed(status) => AppError::ConverterFailed(status),
+            DownloadError::Timeout => AppError::Timeout,
+            DownloadError::Internal(_) => AppError::Internal,
+        }
+    }
+}
+
 pub async fn download(
     Path((source_id, remote_id, file_type)): Path<(u32, u32, FileType)>,
     Query(params): Query<FilenameParams>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, AppError> {
     let normalized = params.normalized.unwrap_or(true);
 
-    // TODO(Task 6, spec 05): differentiate DownloadError variants into distinct HTTP
-    // statuses. This still collapses every error to 204 as a compile-compat shim now
-    // that `book_download` returns `Result<DownloadResult, DownloadError>` directly
-    // instead of `Result<Option<DownloadResult>, _>`.
-    let data = match book_download(source_id, remote_id, file_type.as_str(), normalized).await {
-        Ok(v) => v,
-        Err(_) => return Err((StatusCode::NO_CONTENT, "Can't download!".to_string())),
-    };
+    let data = book_download(source_id, remote_id, file_type.as_str(), normalized)
+        .await
+        .map_err(AppError::from)?;
 
     let filename = data.filename.clone();
     let filename_ascii = data.filename_ascii.clone();
@@ -86,36 +153,21 @@ pub async fn download(
 pub async fn get_filename(
     Path((book_id, file_type)): Path<(u32, FileType)>,
     Query(params): Query<FilenameParams>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, AppError> {
     let normalized = params.normalized.unwrap_or(true);
 
-    let book = match get_book(book_id).await {
-        Ok(v) => v,
-        Err(BookLibraryError::NotFound) => {
-            return (
-                StatusCode::NOT_FOUND,
-                json!({"error": "Book not found"}).to_string(),
-            )
-        }
-        Err(_) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                json!({"error": "book_library is unavailable"}).to_string(),
-            )
-        }
-    };
-
+    let book = get_book(book_id).await.map_err(AppError::from)?;
     let filename = get_filename_by_book(&book, file_type.as_str(), false, false, normalized);
     let filename_ascii = get_filename_by_book(&book, file_type.as_str(), false, true, normalized);
 
-    (
+    Ok((
         StatusCode::OK,
         json!({
             "filename": filename,
             "filename_ascii": filename_ascii
         })
         .to_string(),
-    )
+    ))
 }
 
 pub async fn health() -> impl IntoResponse {
@@ -187,6 +239,7 @@ pub async fn get_router() -> Router {
 mod tests {
     use super::*;
     use crate::services::book_library::error::BookLibraryError;
+    use crate::services::downloader::error::DownloadError;
 
     #[test]
     fn keys_match_identical_strings() {
@@ -295,5 +348,70 @@ mod tests {
             _ => StatusCode::BAD_GATEWAY,
         };
         assert_eq!(status, StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn app_error_from_book_library_not_found_maps_to_404() {
+        let app_err: AppError = BookLibraryError::NotFound.into();
+        assert_eq!(app_err.status_code(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn download_error_library_not_found_maps_to_404() {
+        let app_err: AppError = DownloadError::from(BookLibraryError::NotFound).into();
+        assert_eq!(app_err.status_code(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn download_error_source_unavailable_maps_to_502() {
+        let app_err: AppError = DownloadError::SourceUnavailable.into();
+        assert_eq!(app_err.status_code(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn download_error_bad_archive_maps_to_502() {
+        let app_err: AppError = DownloadError::BadArchive.into();
+        assert_eq!(app_err.status_code(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn download_error_converter_failed_maps_to_502() {
+        let app_err: AppError = DownloadError::ConverterFailed(503).into();
+        assert_eq!(app_err.status_code(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn download_error_timeout_maps_to_504() {
+        let app_err: AppError = DownloadError::Timeout.into();
+        assert_eq!(app_err.status_code(), StatusCode::GATEWAY_TIMEOUT);
+    }
+
+    #[test]
+    fn no_variant_maps_to_204_no_content() {
+        let variants = [
+            AppError::NotFound,
+            AppError::SourceUnavailable,
+            AppError::BadArchive,
+            AppError::ConverterFailed(500),
+            AppError::Timeout,
+            AppError::UpstreamError,
+            AppError::Internal,
+        ];
+        for v in variants {
+            assert_ne!(v.status_code(), StatusCode::NO_CONTENT);
+        }
+    }
+
+    #[tokio::test]
+    async fn app_error_into_response_has_json_body_and_correct_status() {
+        let response = AppError::NotFound.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(!body_bytes.is_empty());
+        let parsed: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(parsed.get("error").is_some());
     }
 }
