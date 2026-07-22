@@ -451,7 +451,7 @@ pub async fn book_download(
 ) -> Result<Option<DownloadResult>, Box<dyn std::error::Error + Send + Sync>> {
     let book = match get_remote_book(source_id, remote_id).await {
         Ok(v) => v,
-        Err(err) => return Err(err),
+        Err(err) => return Err(Box::new(err)),
     };
 
     match start_download_futures(

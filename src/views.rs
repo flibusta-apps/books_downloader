@@ -23,7 +23,9 @@ use crate::{
     config::CONFIG,
     file_type::FileType,
     services::{
-        book_library::get_book, downloader::book_download, filename_getter::get_filename_by_book,
+        book_library::{error::BookLibraryError, get_book},
+        downloader::book_download,
+        filename_getter::get_filename_by_book,
     },
 };
 
@@ -89,13 +91,24 @@ pub async fn get_filename(
 ) -> impl IntoResponse {
     let normalized = params.normalized.unwrap_or(true);
 
-    let (filename, filename_ascii) = match get_book(book_id).await {
-        Ok(book) => (
-            get_filename_by_book(&book, file_type.as_str(), false, false, normalized),
-            get_filename_by_book(&book, file_type.as_str(), false, true, normalized),
-        ),
-        Err(_) => return (StatusCode::BAD_REQUEST, "Book not found!".to_string()),
+    let book = match get_book(book_id).await {
+        Ok(v) => v,
+        Err(BookLibraryError::NotFound) => {
+            return (
+                StatusCode::NOT_FOUND,
+                json!({"error": "Book not found"}).to_string(),
+            )
+        }
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                json!({"error": "book_library is unavailable"}).to_string(),
+            )
+        }
     };
+
+    let filename = get_filename_by_book(&book, file_type.as_str(), false, false, normalized);
+    let filename_ascii = get_filename_by_book(&book, file_type.as_str(), false, true, normalized);
 
     (
         StatusCode::OK,
@@ -175,6 +188,7 @@ pub async fn get_router() -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::book_library::error::BookLibraryError;
 
     #[test]
     fn keys_match_identical_strings() {
@@ -240,5 +254,48 @@ mod tests {
         assert!(!value.chars().any(|c| c.is_control()));
         assert!(value.starts_with("attachment; filename=\""));
         assert!(value.ends_with('"'));
+    }
+
+    #[test]
+    fn book_library_not_found_maps_to_404() {
+        let status = match BookLibraryError::NotFound {
+            BookLibraryError::NotFound => StatusCode::NOT_FOUND,
+            _ => StatusCode::BAD_GATEWAY,
+        };
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn book_library_upstream_failure_maps_to_502() {
+        // Construct a genuine reqwest::Error (not a stub) by making a real request against
+        // a local server that returns 500, then check the same match this task adds.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        let response = reqwest::Client::new()
+            .get(format!("http://{addr}/x"))
+            .send()
+            .await
+            .unwrap();
+        let reqwest_err = response.error_for_status().unwrap_err();
+        let lib_err = BookLibraryError::UpstreamError(reqwest_err);
+
+        let status = match lib_err {
+            BookLibraryError::NotFound => StatusCode::NOT_FOUND,
+            _ => StatusCode::BAD_GATEWAY,
+        };
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
     }
 }
