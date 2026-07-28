@@ -169,14 +169,6 @@ mod tests {
     }
 
     #[test]
-    fn it_works() {
-        let t = "Usachev_A_A_Priklyucheniya_«Kotoboya»";
-        let r = t.get(..t.len() - 2);
-
-        println!("{:?}", r);
-    }
-
-    #[test]
     fn normalized_full_name_transliterates() {
         let book = make_book(
             "Приключения Кота",

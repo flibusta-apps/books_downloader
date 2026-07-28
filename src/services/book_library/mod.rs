@@ -1,23 +1,12 @@
 pub mod error;
 pub mod types;
 
-use once_cell::sync::Lazy;
 use serde::de::DeserializeOwned;
-use std::time::Duration;
 
 use crate::config;
 
+use super::http_client::CLIENT;
 use error::BookLibraryError;
-
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-
-pub static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
-    reqwest::Client::builder()
-        .connect_timeout(config::CONNECT_TIMEOUT)
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .expect("failed to build book_library HTTP client")
-});
 
 async fn _make_request<T>(
     client: &reqwest::Client,
@@ -48,11 +37,6 @@ where
         .json::<T>()
         .await
         .map_err(BookLibraryError::RequestFailed)
-}
-
-pub async fn get_sources() -> Result<types::Source, BookLibraryError> {
-    let url = format!("{}/api/v1/sources", &config::CONFIG.book_library_url);
-    _make_request(&CLIENT, &url, &config::CONFIG.book_library_api_key, vec![]).await
 }
 
 pub async fn get_book(book_id: u32) -> Result<types::BookWithRemote, BookLibraryError> {

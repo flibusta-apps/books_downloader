@@ -14,12 +14,16 @@ pub fn parse_content_length(headers: &reqwest::header::HeaderMap) -> Option<usiz
         .and_then(|v| v.parse().ok())
 }
 
+pub fn content_length(response: &Response) -> Option<usize> {
+    parse_content_length(response.headers())
+}
+
 pub async fn response_to_tempfile(
     res: &mut Response,
     max_bytes: usize,
 ) -> Result<(SpooledTempFile, usize), DownloadError> {
-    if let Some(declared) = res.content_length() {
-        if declared > max_bytes as u64 {
+    if let Some(declared) = content_length(res) {
+        if declared > max_bytes {
             return Err(DownloadError::SourceUnavailable);
         }
     }
@@ -28,36 +32,34 @@ pub async fn response_to_tempfile(
 
     let mut data_size: usize = 0;
 
-    {
-        loop {
-            let chunk = res.chunk().await;
+    loop {
+        let chunk = res.chunk().await;
 
-            let result = match chunk {
-                Ok(v) => v,
-                Err(_) => return Err(DownloadError::SourceUnavailable),
-            };
+        let result = match chunk {
+            Ok(v) => v,
+            Err(_) => return Err(DownloadError::SourceUnavailable),
+        };
 
-            let data = match result {
-                Some(v) => v,
-                None => break,
-            };
+        let data = match result {
+            Some(v) => v,
+            None => break,
+        };
 
-            data_size += data.len();
+        data_size += data.len();
 
-            if data_size > max_bytes {
-                return Err(DownloadError::SourceUnavailable);
-            }
-
-            match tmp_file.write_all(data.chunk()) {
-                Ok(_) => (),
-                Err(_) => return Err(DownloadError::SourceUnavailable),
-            }
+        if data_size > max_bytes {
+            return Err(DownloadError::SourceUnavailable);
         }
 
-        match tmp_file.seek(SeekFrom::Start(0)) {
+        match tmp_file.write_all(data.chunk()) {
             Ok(_) => (),
             Err(_) => return Err(DownloadError::SourceUnavailable),
         }
+    }
+
+    match tmp_file.seek(SeekFrom::Start(0)) {
+        Ok(_) => (),
+        Err(_) => return Err(DownloadError::SourceUnavailable),
     }
 
     Ok((tmp_file, data_size))
@@ -67,7 +69,7 @@ pub async fn response_to_download_data(
     mut response: Response,
     max_bytes: usize,
 ) -> Result<(Data, usize), DownloadError> {
-    if let Some(size) = parse_content_length(response.headers()) {
+    if let Some(size) = content_length(&response) {
         return Ok((Data::Response(response), size));
     }
 

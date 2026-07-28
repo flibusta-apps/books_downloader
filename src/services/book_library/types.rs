@@ -1,12 +1,6 @@
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct Source {
-    // id: u32,
-    // name: String
-}
-
-#[derive(Deserialize, Debug, Clone)]
 pub struct BookAuthor {
     pub id: u32,
     pub first_name: String,

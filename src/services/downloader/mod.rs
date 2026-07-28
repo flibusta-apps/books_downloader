@@ -15,13 +15,25 @@ use self::utils::{response_to_download_data, response_to_tempfile};
 use self::zip::{unzip, zip};
 
 use super::book_library::types::BookWithRemote;
-use super::covert::convert_file;
+use super::convert::convert_file;
 use super::{book_library::get_remote_book, filename_getter::get_filename_by_book};
 
-pub async fn download<'a>(
-    book_id: &'a u32,
-    book_file_type: &'a str,
-    source_config: &'a config::SourceConfig,
+fn filename_pair(
+    book: &BookWithRemote,
+    file_type: &str,
+    force_zip: bool,
+    normalized: bool,
+) -> (String, String) {
+    (
+        get_filename_by_book(book, file_type, force_zip, false, normalized),
+        get_filename_by_book(book, file_type, force_zip, true, normalized),
+    )
+}
+
+pub async fn download(
+    book_id: u32,
+    book_file_type: &str,
+    source_config: &config::SourceConfig,
 ) -> Result<(Response, bool), DownloadError> {
     let basic_url = &source_config.url;
 
@@ -192,11 +204,10 @@ pub async fn download_chain(
         file_type.clone()
     };
 
-    let (mut response, is_zip) = download(&book.remote_id, &file_type_, &source_config).await?;
+    let (mut response, is_zip) = download(book.remote_id, &file_type_, &source_config).await?;
 
     if is_zip && book.file_type.to_lowercase() == "html" {
-        let filename = get_filename_by_book(&book, &file_type, true, false, normalized);
-        let filename_ascii = get_filename_by_book(&book, &file_type, true, true, normalized);
+        let (filename, filename_ascii) = filename_pair(&book, &file_type, true, normalized);
         let (data, data_size) = response_to_download_data(response, limits.max_download_bytes)
             .await
             .inspect_err(|_| {
@@ -218,8 +229,7 @@ pub async fn download_chain(
     }
 
     if !is_zip && !final_need_zip && !converting {
-        let filename = get_filename_by_book(&book, &file_type, false, false, normalized);
-        let filename_ascii = get_filename_by_book(&book, &file_type, false, true, normalized);
+        let (filename, filename_ascii) = filename_pair(&book, &file_type, false, normalized);
         let (data, data_size) = response_to_download_data(response, limits.max_download_bytes)
             .await
             .inspect_err(|_| {
@@ -330,8 +340,7 @@ pub async fn download_chain(
     };
 
     if !final_need_zip {
-        let filename = get_filename_by_book(&book, &file_type, false, false, normalized);
-        let filename_ascii = get_filename_by_book(&book, &file_type, false, true, normalized);
+        let (filename, filename_ascii) = filename_pair(&book, &file_type, false, normalized);
 
         return Ok(DownloadResult::new(
             Data::SpooledTempFile(clean_file),
@@ -370,8 +379,7 @@ pub async fn download_chain(
 
     match zip_result {
         Ok((t_file, data_size)) => {
-            let filename = get_filename_by_book(&book, &file_type, true, false, normalized);
-            let filename_ascii = get_filename_by_book(&book, &file_type, true, true, normalized);
+            let (filename, filename_ascii) = filename_pair(&book, &file_type, true, normalized);
 
             Ok(DownloadResult::new(
                 Data::SpooledTempFile(t_file),
@@ -860,7 +868,7 @@ mod tests {
         let base_url = spawn_raw_server(response).await;
         let source_config = make_source_config(base_url);
 
-        let result = download(&1, "fb2", &source_config).await;
+        let result = download(1, "fb2", &source_config).await;
 
         let (_, is_zip) = result.expect("download should not panic on binary Content-Type");
         assert!(!is_zip);
@@ -934,7 +942,7 @@ mod tests {
                 let response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
                 let base_url = spawn_raw_server(response.as_bytes().to_vec()).await;
                 let source_config = make_source_config(base_url.clone());
-                (download(&1, "fb2", &source_config).await, base_url)
+                (download(1, "fb2", &source_config).await, base_url)
             })
         });
 
@@ -990,7 +998,7 @@ mod tests {
             let _guard = tracing::subscriber::set_default(subscriber);
             rt.block_on(async {
                 let source_config = make_source_config(dead_url.clone());
-                download(&1, "fb2", &source_config).await
+                download(1, "fb2", &source_config).await
             })
         });
 
@@ -1085,7 +1093,7 @@ mod tests {
         });
 
         let source_config = make_source_config(format!("http://{addr}"));
-        let _ = download(&42, "FB2", &source_config).await;
+        let _ = download(42, "FB2", &source_config).await;
 
         let request = received.lock().unwrap().clone();
         assert!(
@@ -1118,7 +1126,7 @@ mod tests {
         });
 
         let source_config = make_source_config(format!("http://{addr}"));
-        let _ = download(&42, "fb2", &source_config).await;
+        let _ = download(42, "fb2", &source_config).await;
 
         let request = received.lock().unwrap().clone();
         assert!(
@@ -1131,7 +1139,7 @@ mod tests {
     async fn mirror_url_rejects_invalid_base_url_instead_of_panicking() {
         let source_config = make_source_config("not a valid url".to_string());
 
-        let result = download(&42, "fb2", &source_config).await;
+        let result = download(42, "fb2", &source_config).await;
 
         assert!(result.is_err());
     }

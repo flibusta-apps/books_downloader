@@ -31,7 +31,6 @@ use crate::{
 
 #[derive(serde::Deserialize, Default)]
 pub struct FilenameParams {
-    #[serde(default)]
     pub normalized: Option<bool>,
 }
 
