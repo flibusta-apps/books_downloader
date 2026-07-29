@@ -578,6 +578,16 @@ mod tests {
         format!("http://{addr}")
     }
 
+    // `tracing::subscriber::set_default` installs a thread-local override, but the
+    // per-callsite `Interest` cache it relies on is process-global. When two tests
+    // each install their own custom subscriber and run concurrently, one thread can
+    // briefly observe the other's cached "not interested" decision for the same
+    // `warn!`/`error!` callsite and silently drop the log line — a rare, real flake,
+    // not a bug in `download_chain`. Serializing the handful of tests below removes
+    // that race without affecting the (much larger) set of tests that don't touch
+    // tracing's global subscriber state.
+    static LOG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[derive(Clone, Default)]
     struct CapturingWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 
@@ -924,6 +934,7 @@ mod tests {
 
     #[test]
     fn mirror_http_error_is_logged_and_counted() {
+        let _log_lock = LOG_TEST_LOCK.lock().unwrap();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -973,6 +984,7 @@ mod tests {
 
     #[test]
     fn mirror_connect_failure_is_logged_and_counted() {
+        let _log_lock = LOG_TEST_LOCK.lock().unwrap();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1025,6 +1037,7 @@ mod tests {
 
     #[test]
     fn unzip_failure_is_logged_with_stage() {
+        let _log_lock = LOG_TEST_LOCK.lock().unwrap();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
