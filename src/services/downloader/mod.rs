@@ -12,7 +12,7 @@ use crate::config;
 use self::error::DownloadError;
 use self::types::{Data, DownloadResult};
 use self::utils::{response_to_download_data, response_to_tempfile};
-use self::zip::{unzip, zip};
+use self::zip::{is_precompressed_file_type, unzip, zip};
 
 use super::book_library::types::BookWithRemote;
 use super::convert::convert_file;
@@ -189,7 +189,7 @@ pub async fn download(
 }
 
 pub async fn download_chain(
-    book: BookWithRemote,
+    book: std::sync::Arc<BookWithRemote>,
     file_type: String,
     source_config: config::SourceConfig,
     converting: bool,
@@ -252,7 +252,7 @@ pub async fn download_chain(
 
     let (unzipped_temp_file, data_size) = {
         let (temp_file_to_unzip, _) =
-            response_to_tempfile(&mut response, limits.max_download_bytes)
+            response_to_tempfile(&mut response, limits.max_download_bytes, 5 * 1024 * 1024)
                 .await
                 .inspect_err(|_| {
                     warn!(
@@ -324,17 +324,21 @@ pub async fn download_chain(
                 err
             })?;
 
-        response_to_tempfile(&mut converted, limits.max_download_bytes)
-            .await
-            .inspect_err(|_| {
-                warn!(
-                    source = %source_config.url,
-                    book_id = book.remote_id,
-                    file_type = %file_type,
-                    stage = "buffer_response",
-                    "failed to buffer converted response body to a temp file"
-                );
-            })?
+        response_to_tempfile(
+            &mut converted,
+            limits.max_download_bytes,
+            config::CONFIG.converted_response_spool_bytes,
+        )
+        .await
+        .inspect_err(|_| {
+            warn!(
+                source = %source_config.url,
+                book_id = book.remote_id,
+                file_type = %file_type,
+                stage = "buffer_response",
+                "failed to buffer converted response body to a temp file"
+            );
+        })?
     } else {
         (unzipped_temp_file, data_size)
     };
@@ -356,9 +360,15 @@ pub async fn download_chain(
         &file_type
     };
     let filename = get_filename_by_book(&book, t_file_type, false, false, normalized);
+    let stored = is_precompressed_file_type(t_file_type);
+    let compression_level = config::CONFIG.zip_compression_level;
 
     let zip_start = Instant::now();
-    let zip_result = match tokio::task::spawn_blocking(move || zip(clean_file, &filename)).await {
+    let zip_result = match tokio::task::spawn_blocking(move || {
+        zip(clean_file, &filename, compression_level, stored)
+    })
+    .await
+    {
         Ok(v) => v,
         Err(err) => {
             metrics::histogram!("download_stage_duration_seconds", "stage" => "zip")
@@ -410,12 +420,14 @@ pub async fn start_download_futures(
     limits: config::DownloadLimits,
     overall_deadline: std::time::Duration,
 ) -> Result<DownloadResult, DownloadError> {
+    let book = std::sync::Arc::new(book.clone());
+
     let attempt = async {
         let mut last_err = DownloadError::SourceUnavailable;
 
         for source_config in sources {
             match download_chain(
-                book.clone(),
+                std::sync::Arc::clone(&book),
                 file_type.to_string(),
                 source_config.clone(),
                 false,
@@ -430,7 +442,7 @@ pub async fn start_download_futures(
 
             if file_type == "epub" || file_type == "fb2" {
                 match download_chain(
-                    book.clone(),
+                    std::sync::Arc::clone(&book),
                     file_type.to_string(),
                     source_config.clone(),
                     true,
@@ -499,7 +511,7 @@ mod tests {
 
     fn make_source_config(url: String) -> config::SourceConfig {
         config::SourceConfig {
-            url,
+            url: url.into(),
             proxy: None,
             client: reqwest::Client::new(),
         }
@@ -530,7 +542,7 @@ mod tests {
         client: reqwest::Client,
     ) -> config::SourceConfig {
         config::SourceConfig {
-            url,
+            url: url.into(),
             proxy: None,
             client,
         }
@@ -760,7 +772,7 @@ mod tests {
         let book = make_book("fb2");
 
         let result = download_chain(
-            book,
+            std::sync::Arc::new(book),
             "epub".to_string(),
             source_config,
             false,
@@ -795,7 +807,7 @@ mod tests {
         let book = make_book("fb2");
 
         let result = download_chain(
-            book,
+            std::sync::Arc::new(book),
             "fb2".to_string(),
             source_config,
             false,
@@ -822,7 +834,7 @@ mod tests {
         let book = make_book("html");
 
         let result = download_chain(
-            book,
+            std::sync::Arc::new(book),
             "html".to_string(),
             source_config,
             false,
@@ -848,7 +860,7 @@ mod tests {
         let book = make_book("fb2");
 
         let result = download_chain(
-            book,
+            std::sync::Arc::new(book),
             "fb2".to_string(),
             source_config,
             false,
@@ -897,7 +909,7 @@ mod tests {
         let book = make_book("fb2");
 
         let result = download_chain(
-            book,
+            std::sync::Arc::new(book),
             "fb2zip".to_string(),
             source_config,
             false,
@@ -926,8 +938,15 @@ mod tests {
             max_compression_ratio: 1000,
         };
 
-        let result =
-            download_chain(book, "fb2".to_string(), source_config, false, true, limits).await;
+        let result = download_chain(
+            std::sync::Arc::new(book),
+            "fb2".to_string(),
+            source_config,
+            false,
+            true,
+            limits,
+        )
+        .await;
 
         assert!(result.is_err());
     }
@@ -1062,7 +1081,7 @@ mod tests {
                 let book = make_book("fb2");
 
                 download_chain(
-                    book,
+                    std::sync::Arc::new(book),
                     "fb2zip".to_string(),
                     source_config,
                     false,

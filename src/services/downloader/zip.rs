@@ -57,23 +57,38 @@ pub fn unzip(
     Err(DownloadError::BadArchive)
 }
 
-pub fn zip(
-    mut tmp_file: SpooledTempFile,
+/// Returns true when `file_type` names a format that is already compressed
+/// (zip/epub), so the ZIP entry should be stored rather than re-deflated.
+pub fn is_precompressed_file_type(file_type: &str) -> bool {
+    let lower = file_type.to_lowercase();
+    lower == "zip" || lower == "epub"
+}
+
+pub fn zip<R: std::io::Read>(
+    mut source: R,
     filename: &str,
+    compression_level: i64,
+    stored: bool,
 ) -> Result<(SpooledTempFile, usize), DownloadError> {
     let output_file = tempfile::spooled_tempfile(5 * 1024 * 1024);
     let mut archive = zip::ZipWriter::new(output_file);
 
-    let options: FileOptions<_> = FileOptions::default()
-        .compression_level(Some(9))
-        .compression_method(zip::CompressionMethod::Deflated)
-        .unix_permissions(0o755);
+    let options: FileOptions<_> = if stored {
+        FileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)
+            .unix_permissions(0o755)
+    } else {
+        FileOptions::default()
+            .compression_level(Some(compression_level))
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(0o755)
+    };
 
     archive
         .start_file::<&str, ()>(filename, options)
         .map_err(|_| DownloadError::Internal("failed to start zip entry".to_string()))?;
 
-    std::io::copy(&mut tmp_file, &mut archive)
+    std::io::copy(&mut source, &mut archive)
         .map_err(|_| DownloadError::Internal("failed to write zip entry".to_string()))?;
 
     let mut archive_result = archive
@@ -186,7 +201,7 @@ mod tests {
         input.write_all(original).unwrap();
         input.rewind().unwrap();
 
-        let (zipped, zipped_size) = zip(input, "book.fb2").expect("zip should succeed");
+        let (zipped, zipped_size) = zip(input, "book.fb2", 6, false).expect("zip should succeed");
         assert!(zipped_size > 0);
 
         let (mut unzipped, unzipped_size) =
@@ -206,7 +221,7 @@ mod tests {
         input.write_all(&original).unwrap();
         input.rewind().unwrap();
 
-        let (zipped, _) = zip(input, "book.fb2").expect("zip should succeed");
+        let (zipped, _) = zip(input, "book.fb2", 6, false).expect("zip should succeed");
 
         let result = unzip(zipped, "fb2", 1024 * 1024, u64::MAX);
 
@@ -220,7 +235,7 @@ mod tests {
         input.write_all(&original).unwrap();
         input.rewind().unwrap();
 
-        let (zipped, zipped_size) = zip(input, "book.fb2").expect("zip should succeed");
+        let (zipped, zipped_size) = zip(input, "book.fb2", 6, false).expect("zip should succeed");
         assert!(
             zipped_size < original.len() / 20,
             "test fixture must compress well beyond the ratio cap to be meaningful"

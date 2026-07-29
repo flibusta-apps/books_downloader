@@ -1,12 +1,38 @@
+use once_cell::sync::Lazy;
 use translit::{gost779b_ru, CharsMapping, Transliterator};
 
 use super::book_library::types::{BookAuthor, BookWithRemote};
 
-pub fn get_author_short_name(author: BookAuthor) -> String {
+/// GOST 7.79B transliteration table is immutable/static; build it once
+/// instead of reconstructing it on every `get_filename_by_book` call.
+static GOST_TRANSLITERATOR: Lazy<Transliterator> = Lazy::new(|| Transliterator::new(gost779b_ru()));
+
+/// Static replace-char map used for filename cleanup; built once instead
+/// of reconstructing it on every `get_filename_by_book` call.
+static REPLACE_TRANSLITERATOR: Lazy<Transliterator> = Lazy::new(|| {
+    let replace_char_map: CharsMapping = [
+        ("—", "-"),
+        ("/", "_"),
+        (" ", "_"),
+        ("–", "-"),
+        ("á", "a"),
+        (" ", "_"),
+        ("'", ""),
+        ("`", ""),
+        ("[", ""),
+        ("]", ""),
+        ("\"", ""),
+    ]
+    .to_vec();
+
+    Transliterator::new(replace_char_map)
+});
+
+pub fn get_author_short_name(author: &BookAuthor) -> String {
     let mut parts: Vec<String> = vec![];
 
     if !author.last_name.is_empty() {
-        parts.push(author.last_name);
+        parts.push(author.last_name.clone());
     }
 
     if !author.first_name.is_empty() {
@@ -43,8 +69,7 @@ pub fn get_filename_by_book(
     if !book.authors.is_empty() {
         filename_parts.push(
             book.authors
-                .clone()
-                .into_iter()
+                .iter()
                 .map(get_author_short_name)
                 .collect::<Vec<String>>()
                 .join("_-_"),
@@ -64,8 +89,7 @@ pub fn get_filename_by_book(
         .replace(['\u{00AB}', '\u{00BB}'], "");
 
     if normalized {
-        let transliterator = Transliterator::new(gost779b_ru());
-        filename_without_type = transliterator.convert(&filename_without_type, false);
+        filename_without_type = GOST_TRANSLITERATOR.convert(&filename_without_type, false);
     }
 
     // Strip punctuation and quotes that don't survive the transliterator.
@@ -91,23 +115,7 @@ pub fn get_filename_by_book(
         .collect();
     filename_without_type = stripped;
 
-    let replace_char_map: CharsMapping = [
-        ("—", "-"),
-        ("/", "_"),
-        (" ", "_"),
-        ("–", "-"),
-        ("á", "a"),
-        (" ", "_"),
-        ("'", ""),
-        ("`", ""),
-        ("[", ""),
-        ("]", ""),
-        ("\"", ""),
-    ]
-    .to_vec();
-
-    let replace_transliterator = Transliterator::new(replace_char_map);
-    let mut normal_filename = replace_transliterator.convert(&filename_without_type, false);
+    let mut normal_filename = REPLACE_TRANSLITERATOR.convert(&filename_without_type, false);
 
     if only_ascii && normalized {
         normal_filename = normal_filename.replace(|c: char| !c.is_ascii(), "");

@@ -21,6 +21,7 @@ pub fn content_length(response: &Response) -> Option<usize> {
 pub async fn response_to_tempfile(
     res: &mut Response,
     max_bytes: usize,
+    spool_threshold: usize,
 ) -> Result<(SpooledTempFile, usize), DownloadError> {
     if let Some(declared) = content_length(res) {
         if declared > max_bytes {
@@ -28,7 +29,7 @@ pub async fn response_to_tempfile(
         }
     }
 
-    let mut tmp_file = tempfile::spooled_tempfile(5 * 1024 * 1024);
+    let mut tmp_file = tempfile::spooled_tempfile(spool_threshold);
 
     let mut data_size: usize = 0;
 
@@ -73,7 +74,7 @@ pub async fn response_to_download_data(
         return Ok((Data::Response(response), size));
     }
 
-    let (tmp_file, size) = response_to_tempfile(&mut response, max_bytes).await?;
+    let (tmp_file, size) = response_to_tempfile(&mut response, max_bytes, 5 * 1024 * 1024).await?;
     Ok((Data::SpooledTempFile(tmp_file), size))
 }
 

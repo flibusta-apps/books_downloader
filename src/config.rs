@@ -24,6 +24,15 @@ fn parse_u64_or(raw: Option<&str>, env: &'static str, default: u64) -> u64 {
     }
 }
 
+fn parse_i64_or(raw: Option<&str>, env: &'static str, default: i64) -> i64 {
+    match raw {
+        Some(v) => v
+            .parse()
+            .unwrap_or_else(|err| panic!("{env} must be a valid integer: {err}")),
+        None => default,
+    }
+}
+
 fn parse_duration_secs_or(raw: Option<&str>, env: &'static str, default_secs: u64) -> Duration {
     Duration::from_secs(parse_u64_or(raw, env, default_secs))
 }
@@ -41,7 +50,7 @@ struct RawSourceConfig {
 
 #[derive(Clone)]
 pub struct SourceConfig {
-    pub url: String,
+    pub url: std::sync::Arc<str>,
     pub proxy: Option<String>,
     pub client: reqwest::Client,
 }
@@ -70,7 +79,7 @@ fn parse_fl_sources(raw_json: &str, mirror_request_timeout: Duration) -> Vec<Sou
         .map(|r| {
             let client = build_client(r.proxy.as_deref(), mirror_request_timeout);
             SourceConfig {
-                url: r.url,
+                url: r.url.into(),
                 proxy: r.proxy,
                 client,
             }
@@ -110,6 +119,19 @@ pub struct Config {
     /// Wall-clock deadline for the whole `/download` failover loop across all
     /// mirrors. Configurable via `DOWNLOAD_TIMEOUT_SECS` (default 300s).
     pub overall_download_timeout: Duration,
+
+    /// DEFLATE compression level (0-9) used when producing result ZIP archives.
+    /// Configurable via `ZIP_COMPRESSION_LEVEL` (default 6). Lower values trade
+    /// smaller output for less CPU time; ignored for already-compressed inputs
+    /// (zip/epub), which are stored uncompressed instead.
+    pub zip_compression_level: i64,
+
+    /// In-memory spool threshold used when buffering a converter response to a
+    /// temp file ahead of a subsequent ZIP step. Smaller than the general 5 MiB
+    /// default used elsewhere, since this buffer is a short-lived intermediate
+    /// hop rather than the final downloaded artifact. Configurable via
+    /// `CONVERTED_RESPONSE_SPOOL_BYTES` (default 512 KiB).
+    pub converted_response_spool_bytes: usize,
 }
 
 impl Config {
@@ -156,6 +178,20 @@ impl Config {
                 "DOWNLOAD_TIMEOUT_SECS",
                 300,
             ),
+
+            zip_compression_level: parse_i64_or(
+                std::env::var("ZIP_COMPRESSION_LEVEL").ok().as_deref(),
+                "ZIP_COMPRESSION_LEVEL",
+                6,
+            ),
+
+            converted_response_spool_bytes: parse_usize_or(
+                std::env::var("CONVERTED_RESPONSE_SPOOL_BYTES")
+                    .ok()
+                    .as_deref(),
+                "CONVERTED_RESPONSE_SPOOL_BYTES",
+                512 * 1024,
+            ),
         }
     }
 }
@@ -174,7 +210,7 @@ mod tests {
         let sources =
             parse_fl_sources(r#"[{"url": "http://example.com"}]"#, Duration::from_secs(5));
         assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0].url, "http://example.com");
+        assert_eq!(&*sources[0].url, "http://example.com");
         assert!(sources[0].proxy.is_none());
     }
 
