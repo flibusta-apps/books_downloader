@@ -46,6 +46,8 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 struct RawSourceConfig {
     url: String,
     proxy: Option<String>,
+    #[serde(default)]
+    api_key: Option<String>,
 }
 
 #[derive(Clone)]
@@ -55,7 +57,11 @@ pub struct SourceConfig {
     pub client: reqwest::Client,
 }
 
-fn build_client(proxy: Option<&str>, mirror_request_timeout: Duration) -> reqwest::Client {
+fn build_client(
+    proxy: Option<&str>,
+    api_key: Option<&str>,
+    mirror_request_timeout: Duration,
+) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(mirror_request_timeout);
@@ -66,18 +72,32 @@ fn build_client(proxy: Option<&str>, mirror_request_timeout: Duration) -> reqwes
         builder = builder.proxy(proxy);
     }
 
+    if let Some(key) = api_key {
+        // Never include the key in the panic message.
+        let mut value = reqwest::header::HeaderValue::from_str(key)
+            .unwrap_or_else(|_| panic!("FL_SOURCES: invalid api_key (not a valid header value)"));
+        value.set_sensitive(true);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::AUTHORIZATION, value);
+        builder = builder.default_headers(headers);
+    }
+
     builder
         .build()
         .unwrap_or_else(|err| panic!("FL_SOURCES: failed to build HTTP client: {err}"))
 }
 
-fn parse_fl_sources(raw_json: &str, mirror_request_timeout: Duration) -> Vec<SourceConfig> {
-    let raw: Vec<RawSourceConfig> =
-        serde_json::from_str(raw_json).expect("FL_SOURCES must be a JSON array of {url, proxy?}");
+pub(crate) fn parse_fl_sources(
+    raw_json: &str,
+    mirror_request_timeout: Duration,
+) -> Vec<SourceConfig> {
+    let raw: Vec<RawSourceConfig> = serde_json::from_str(raw_json)
+        .expect("FL_SOURCES must be a JSON array of {url, proxy?, api_key?}");
 
     raw.into_iter()
         .map(|r| {
-            let client = build_client(r.proxy.as_deref(), mirror_request_timeout);
+            let api_key = r.api_key.as_deref().filter(|k| !k.is_empty());
+            let client = build_client(r.proxy.as_deref(), api_key, mirror_request_timeout);
             SourceConfig {
                 url: r.url.into(),
                 proxy: r.proxy,
@@ -224,6 +244,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_sources_with_api_key_empty_or_absent() {
+        let sources = parse_fl_sources(
+            r#"[{"url": "http://a", "api_key": "secret"}, {"url": "http://b", "api_key": ""}, {"url": "http://c"}]"#,
+            Duration::from_secs(5),
+        );
+        assert_eq!(sources.len(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "FL_SOURCES: invalid api_key")]
+    fn invalid_api_key_panics_without_leaking_key() {
+        parse_fl_sources(
+            r#"[{"url": "http://example.com", "api_key": "bad\nkey"}]"#,
+            Duration::from_secs(5),
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "FL_SOURCES must be a JSON array")]
     fn invalid_json_panics_with_actionable_message() {
         parse_fl_sources("not json", Duration::from_secs(5));
@@ -308,7 +346,7 @@ mod tests {
         });
 
         let proxy_url = format!("http://{addr}");
-        let client = build_client(Some(&proxy_url), Duration::from_secs(5));
+        let client = build_client(Some(&proxy_url), None, Duration::from_secs(5));
 
         let _ = client.get("https://example.invalid/path").send().await;
 
@@ -332,7 +370,7 @@ mod tests {
             }
         });
 
-        let client = build_client(None, Duration::from_millis(200));
+        let client = build_client(None, None, Duration::from_millis(200));
 
         let start = tokio::time::Instant::now();
         let result = client.get(format!("http://{addr}")).send().await;

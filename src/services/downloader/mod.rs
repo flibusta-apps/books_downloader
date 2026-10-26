@@ -1175,4 +1175,61 @@ mod tests {
 
         assert!(result.is_err());
     }
+
+    async fn capture_request_with_source(sources_json: &str) -> String {
+        let received: std::sync::Arc<std::sync::Mutex<String>> =
+            std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let received_clone = received.clone();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                if let Ok(n) = socket.read(&mut buf).await {
+                    *received_clone.lock().unwrap() =
+                        String::from_utf8_lossy(&buf[..n]).to_string();
+                }
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        let json = sources_json.replace("ADDR", &format!("http://{addr}"));
+        let sources = config::parse_fl_sources(&json, std::time::Duration::from_secs(5));
+        let _ = download(42, "fb2", &sources[0]).await;
+
+        let request = received.lock().unwrap().clone();
+        request
+    }
+
+    #[tokio::test]
+    async fn source_api_key_is_sent_as_raw_authorization_header() {
+        let request =
+            capture_request_with_source(r#"[{"url": "ADDR", "api_key": "s3cret"}]"#).await;
+        assert!(
+            request
+                .to_lowercase()
+                .contains("\r\nauthorization: s3cret\r\n"),
+            "expected raw Authorization header, got: {request:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn source_without_api_key_sends_no_authorization_header() {
+        for json in [
+            r#"[{"url": "ADDR"}]"#,
+            r#"[{"url": "ADDR", "api_key": ""}]"#,
+        ] {
+            let request = capture_request_with_source(json).await;
+            assert!(request.starts_with("GET /b/42/fb2 "), "got: {request:?}");
+            assert!(
+                !request.to_lowercase().contains("authorization"),
+                "unexpected Authorization header, got: {request:?}"
+            );
+        }
+    }
 }
