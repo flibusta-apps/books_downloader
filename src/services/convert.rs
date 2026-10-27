@@ -26,8 +26,44 @@ pub async fn convert_file(
         .await
         .map_err(|_| DownloadError::ConverterUnavailable)?;
 
-    response.error_for_status().map_err(|err| {
-        let status = err.status().map(|s| s.as_u16()).unwrap_or(0);
-        DownloadError::ConverterFailed(status)
-    })
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    Err(converter_status_error(status.as_u16()))
+}
+
+/// Maps a non-success converter status to an error. None of these are caused by
+/// a mirror, so failover must stop on all of them.
+/// - 422: the conversion itself failed (bad input) -> `ConverterFailed`
+/// - 408 (body read timeout) / 503 (queue full) -> `ConverterUnavailable`
+/// - anything else -> `ConverterFailed(status)`
+pub(crate) fn converter_status_error(status: u16) -> DownloadError {
+    match status {
+        408 | 503 => DownloadError::ConverterUnavailable,
+        other => DownloadError::ConverterFailed(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn converter_status_mapping() {
+        assert!(matches!(
+            converter_status_error(422),
+            DownloadError::ConverterFailed(422)
+        ));
+        assert!(matches!(
+            converter_status_error(408),
+            DownloadError::ConverterUnavailable
+        ));
+        assert!(matches!(
+            converter_status_error(503),
+            DownloadError::ConverterUnavailable
+        ));
+        assert!(!converter_status_error(422).is_mirror_failure());
+        assert!(!converter_status_error(503).is_mirror_failure());
+    }
 }
