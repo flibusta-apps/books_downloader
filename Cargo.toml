@@ -21,7 +21,7 @@ strip = false
 tokio = { version = "1.44.2", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "signal", "sync"] }
 tokio-util = { version = "0.7.14", features = ["io-util"] }
 futures = "0.3.31"
-reqwest = { version = "0.12.15", features = ["json", "stream", "multipart"] }
+reqwest = { version = "0.13.5", features = ["json", "stream", "multipart"] }
 
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"]}
