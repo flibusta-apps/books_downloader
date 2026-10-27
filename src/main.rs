@@ -7,7 +7,7 @@ use sentry::{integrations::debug_images::DebugImagesIntegration, types::Dsn, Cli
 use sentry_tracing::EventFilter;
 use std::{net::SocketAddr, str::FromStr};
 use tracing::info;
-use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use crate::views::get_router;
 
@@ -42,7 +42,6 @@ async fn main() {
     let _guard = config::CONFIG.sentry_dsn.as_deref().map(|dsn| {
         let options = ClientOptions {
             dsn: Some(Dsn::from_str(dsn).expect("SENTRY_DSN must be a valid Sentry DSN URL")),
-            default_integrations: false,
             ..Default::default()
         }
         .add_integration(DebugImagesIntegration::new());
@@ -56,8 +55,8 @@ async fn main() {
     });
 
     tracing_subscriber::registry()
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(tracing_subscriber::fmt::layer().with_target(false))
-        .with(filter::LevelFilter::INFO)
         .with(sentry_layer)
         .init();
 

@@ -17,12 +17,15 @@ pub fn unzip(
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|_| DownloadError::BadArchive)?;
-        let filename = file.name();
-
-        let matches_ext = filename
-            .rsplit('.')
-            .next()
-            .map(|ext| ext.eq_ignore_ascii_case(&file_type_lower))
+        let matches_ext = file
+            .name()
+            .map(|filename| {
+                filename
+                    .rsplit('.')
+                    .next()
+                    .map(|ext| ext.eq_ignore_ascii_case(&file_type_lower))
+                    .unwrap_or(false)
+            })
             .unwrap_or(false);
 
         if !file.is_dir() && matches_ext {

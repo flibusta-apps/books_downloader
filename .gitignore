@@ -8,3 +8,6 @@ venv
 target
 
 docs/specs
+
+.env
+.env.*

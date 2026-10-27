@@ -13,6 +13,7 @@ use axum::{
 };
 use axum_prometheus::PrometheusMetricLayer;
 use base64::{engine::general_purpose, Engine};
+use futures::StreamExt;
 use serde_json::json;
 use subtle::ConstantTimeEq;
 use tokio_util::io::ReaderStream;
@@ -24,7 +25,7 @@ use crate::{
     file_type::FileType,
     services::{
         book_library::{error::BookLibraryError, get_book},
-        downloader::{book_download, error::DownloadError},
+        downloader::{acquire_download_permit, book_download, error::DownloadError},
         filename_getter::get_filename_by_book,
     },
 };
@@ -47,8 +48,10 @@ pub enum AppError {
     NotFound,
     SourceUnavailable,
     BadArchive,
+    TooLarge,
     ConverterFailed(u16),
     Timeout,
+    Busy,
     UpstreamError,
     Internal,
 }
@@ -58,6 +61,8 @@ impl AppError {
         match self {
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::Timeout => StatusCode::GATEWAY_TIMEOUT,
+            AppError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            AppError::Busy => StatusCode::SERVICE_UNAVAILABLE,
             AppError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::SourceUnavailable
             | AppError::BadArchive
@@ -72,6 +77,8 @@ impl AppError {
             AppError::SourceUnavailable => "Upstream source unavailable".to_string(),
             AppError::BadArchive => "Downloaded archive was invalid".to_string(),
             AppError::ConverterFailed(status) => format!("Converter failed with status {status}"),
+            AppError::TooLarge => "Source file is too large".to_string(),
+            AppError::Busy => "Too many concurrent downloads".to_string(),
             AppError::Timeout => "Download timed out".to_string(),
             AppError::UpstreamError => "book_library is unavailable".to_string(),
             AppError::Internal => "Internal error".to_string(),
@@ -104,7 +111,10 @@ impl From<DownloadError> for AppError {
             DownloadError::Library(lib_err) => AppError::from(lib_err),
             DownloadError::SourceUnavailable => AppError::SourceUnavailable,
             DownloadError::BadArchive => AppError::BadArchive,
+            DownloadError::TooLarge => AppError::TooLarge,
             DownloadError::ConverterFailed(status) => AppError::ConverterFailed(status),
+            DownloadError::ConverterUnavailable => AppError::UpstreamError,
+            DownloadError::LocalIo(_) => AppError::Internal,
             DownloadError::Timeout => AppError::Timeout,
             DownloadError::Internal(_) => AppError::Internal,
         }
@@ -117,6 +127,9 @@ pub async fn download(
 ) -> Result<impl IntoResponse, AppError> {
     let normalized = params.normalized.unwrap_or(true);
 
+    // Held until the response body has been fully produced (moved into the stream below).
+    let permit = acquire_download_permit().await.ok_or(AppError::Busy)?;
+
     let data = book_download(source_id, remote_id, file_type.as_str(), normalized)
         .await
         .map_err(AppError::from)?;
@@ -126,7 +139,9 @@ pub async fn download(
     let file_size = data.data_size;
 
     let reader = data.get_async_read();
-    let stream = ReaderStream::new(reader);
+    let stream = ReaderStream::new(reader).inspect(move |_| {
+        let _keep = &permit;
+    });
 
     let encoder = general_purpose::STANDARD;
 

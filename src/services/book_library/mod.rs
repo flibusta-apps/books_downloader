@@ -40,21 +40,34 @@ where
 }
 
 pub async fn get_book(book_id: u32) -> Result<types::BookWithRemote, BookLibraryError> {
-    let url = format!("{}/api/v1/books/{book_id}", config::CONFIG.book_library_url);
-    _make_request(&CLIENT, &url, &config::CONFIG.book_library_api_key, vec![]).await
+    let url = config::join_url(
+        &config::CONFIG.book_library_url,
+        &format!("api/v1/books/{book_id}"),
+    );
+    _make_request(
+        &CLIENT,
+        url.as_str(),
+        &config::CONFIG.book_library_api_key,
+        vec![],
+    )
+    .await
 }
 
 pub async fn get_remote_book(
     source_id: u32,
     remote_id: u32,
 ) -> Result<types::BookWithRemote, BookLibraryError> {
-    let url = format!(
-        "{}/api/v1/books/remote/{source_id}/{remote_id}",
-        config::CONFIG.book_library_url
+    let url = config::join_url(
+        &config::CONFIG.book_library_url,
+        &format!("api/v1/books/remote/{source_id}/{remote_id}"),
     );
-    let book =
-        _make_request::<types::Book>(&CLIENT, &url, &config::CONFIG.book_library_api_key, vec![])
-            .await?;
+    let book = _make_request::<types::Book>(
+        &CLIENT,
+        url.as_str(),
+        &config::CONFIG.book_library_api_key,
+        vec![],
+    )
+    .await?;
     Ok(types::BookWithRemote::from_book(book, remote_id))
 }
 

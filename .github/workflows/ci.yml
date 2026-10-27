@@ -28,10 +28,16 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        run: cargo clippy --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run tests
         run: cargo test --all-features
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies
+        run: cargo audit
 
   clippy-sarif:
     name: Run rust-clippy analyzing
@@ -53,11 +59,11 @@ jobs:
         run: cargo install clippy-sarif sarif-fmt
 
       - name: Run rust-clippy
-        run:
-          cargo clippy
-          --all-features
-          --message-format=json | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
-        continue-on-error: true # informational SARIF upload only; lint-test is the blocking gate
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo clippy --all-targets --all-features --message-format=json \
+            | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
 
       - name: Upload analysis results to GitHub
         uses: github/codeql-action/upload-sarif@v4.39.1
@@ -67,7 +73,7 @@ jobs:
 
   build-docker-image:
     name: Build docker image
-    needs: lint-test
+    needs: [lint-test, clippy-sarif]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -80,10 +86,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - id: repository_name
-        uses: ASzc/change-string-case-action@v8
-        with:
-          string: ${{ github.repository }}
+      - name: Compute lowercase image name
+        run: echo "IMAGE=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
       - name: Login to ghcr.io
         uses: docker/login-action@v4.7.0
@@ -95,8 +99,6 @@ jobs:
       - name: Build and push
         id: docker_build
         uses: docker/build-push-action@v7
-        env:
-          IMAGE: ${{ steps.repository_name.outputs.lowercase }}
         with:
           push: true
           platforms: linux/amd64
@@ -107,6 +109,6 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Invoke deployment hook
-        uses: joelwmale/webhook-action@master
-        with:
-          url: ${{ secrets.WEBHOOK_URL }}?BOOK_DOWNLOADER_TAG=${{ github.sha }}
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        run: curl -fsS --retry 3 --max-time 30 -X POST "${WEBHOOK_URL}?BOOK_DOWNLOADER_TAG=${GITHUB_SHA}"
