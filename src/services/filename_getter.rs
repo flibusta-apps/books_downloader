@@ -126,11 +126,12 @@ pub fn get_filename_by_book(
     // so a generated name is always safe to ship.
     normal_filename = normal_filename.replace(['\\', '|', ':', '*', '"', '<', '>', '?', '!'], "");
 
-    // Telegram reserves 60 bytes for the whole `file_name`; cap the
-    // left part at 50 bytes UTF-8 to leave headroom for `.ID.ext(.zip)`.
-    const TELEGRAM_LEFT_MAX_BYTES: usize = 50;
+    // Telegram reserves 60 bytes for the whole `file_name`; the left part gets
+    // whatever the `.ID.ext(.zip)` suffix leaves, so the total is always <= 60.
+    const TELEGRAM_FILENAME_MAX_BYTES: usize = 60;
     let right_part = format!(".{book_id}.{file_type_}");
-    let left_max = TELEGRAM_LEFT_MAX_BYTES.min(normal_filename.len());
+    let left_limit = TELEGRAM_FILENAME_MAX_BYTES.saturating_sub(right_part.len());
+    let left_max = left_limit.min(normal_filename.len());
     let slice_end = normal_filename.floor_char_boundary(left_max);
 
     // Collapse trailing underscores (or dots) that may appear after stripping
@@ -145,6 +146,10 @@ pub fn get_filename_by_book(
         } else {
             break;
         }
+    }
+
+    if left_part.is_empty() {
+        left_part = "book";
     }
 
     format!("{left_part}{right_part}")
@@ -334,6 +339,24 @@ mod tests {
             filename.len()
         );
         assert!(filename.ends_with(".42.fb2"));
+    }
+
+    #[test]
+    fn long_suffix_still_fits_60_bytes() {
+        let long_title: String = "А".repeat(200);
+        let mut book = make_book(&long_title, vec![author("Иванов", "И", "И")]);
+        book.remote_id = 4_000_000_000;
+        let filename = get_filename_by_book(&book, "fb2zip", false, false, true);
+        assert!(filename.len() <= 60, "{} bytes: {filename}", filename.len());
+        let filename = get_filename_by_book(&book, "epub", true, false, false);
+        assert!(filename.len() <= 60, "{} bytes: {filename}", filename.len());
+    }
+
+    #[test]
+    fn empty_left_part_gets_placeholder() {
+        let book = make_book("???", vec![]);
+        let filename = get_filename_by_book(&book, "fb2", false, false, true);
+        assert_eq!(filename, "book.42.fb2");
     }
 
     #[test]

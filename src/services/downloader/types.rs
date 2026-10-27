@@ -1,8 +1,9 @@
+use bytes::Bytes;
 use reqwest::Response;
+use std::io::Read;
 use std::pin::Pin;
 use tempfile::SpooledTempFile;
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio_util::io::SyncIoBridge;
 
 use futures::TryStreamExt;
 use tokio_util::io::StreamReader;
@@ -32,17 +33,41 @@ fn limit_async_read<R: AsyncRead>(read: R, limit: u64) -> impl AsyncRead {
 /// Streams a `SpooledTempFile` (sync `Read`) into an `AsyncRead` without blocking a
 /// tokio worker thread: the blocking reads run on the blocking pool and are piped
 /// across an in-memory duplex to the async side.
-pub fn spooled_temp_file_into_async_read(
-    mut file: SpooledTempFile,
-) -> Pin<Box<dyn AsyncRead + Send>> {
-    let (async_read, async_write) = tokio::io::duplex(64 * 1024);
+///
+/// A read error is logged and propagated to the consumer as an `io::Error` (so the
+/// HTTP body aborts instead of looking like a clean, truncated EOF).
+pub fn spooled_temp_file_into_async_read(file: SpooledTempFile) -> Pin<Box<dyn AsyncRead + Send>> {
+    let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<Bytes>>(4);
 
     drop(tokio::task::spawn_blocking(move || {
-        let mut writer = SyncIoBridge::new(async_write);
-        std::io::copy(&mut file, &mut writer)
+        let mut file = file;
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if tx
+                        .blocking_send(Ok(Bytes::copy_from_slice(&buf[..n])))
+                        .is_err()
+                    {
+                        // Consumer went away; nothing more to do.
+                        break;
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(err) => {
+                    tracing::error!(error = %err, "failed to read spooled temp file while streaming");
+                    let _ = tx.blocking_send(Err(err));
+                    break;
+                }
+            }
+        }
     }));
 
-    Box::pin(async_read)
+    let stream = futures::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    });
+    Box::pin(StreamReader::new(stream))
 }
 
 impl DownloadResult {

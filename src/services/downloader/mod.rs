@@ -3,11 +3,13 @@ pub mod types;
 pub mod utils;
 pub mod zip;
 
+use once_cell::sync::Lazy;
 use reqwest::{Response, Url};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{error, warn};
 
-use crate::config;
+use crate::config::{self, source_label};
 
 use self::error::DownloadError;
 use self::types::{Data, DownloadResult};
@@ -17,6 +19,45 @@ use self::zip::{is_precompressed_file_type, unzip, zip};
 use super::book_library::types::BookWithRemote;
 use super::convert::convert_file;
 use super::{book_library::get_remote_book, filename_getter::get_filename_by_book};
+
+/// How long a request waits for a free download slot before being rejected with 503.
+const SEMAPHORE_WAIT: Duration = Duration::from_secs(2);
+
+static DOWNLOAD_SEMAPHORE: Lazy<std::sync::Arc<Semaphore>> =
+    Lazy::new(|| std::sync::Arc::new(Semaphore::new(config::CONFIG.max_concurrent_downloads)));
+
+/// Acquires a global download slot. Returns `None` when saturated after a short wait.
+pub async fn acquire_download_permit() -> Option<OwnedSemaphorePermit> {
+    match tokio::time::timeout(
+        SEMAPHORE_WAIT,
+        std::sync::Arc::clone(&DOWNLOAD_SEMAPHORE).acquire_owned(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => Some(permit),
+        _ => None,
+    }
+}
+
+/// The file type that is fetched from the mirror for a requested type.
+fn mirror_file_type(requested: &str) -> &str {
+    if requested == "fb2zip" {
+        "fb2"
+    } else {
+        requested
+    }
+}
+
+/// A zip wrapper must be unpacked only for fb2/fb2zip requests; every other
+/// format (e.g. epub, which is itself a zip) is served exactly as received.
+fn needs_unzip(requested: &str, is_zip: bool) -> bool {
+    is_zip && matches!(requested, "fb2" | "fb2zip")
+}
+
+/// Conversion is only possible from an fb2 source into epub/mobi.
+pub fn conversion_fallback_allowed(source_type: &str, requested: &str) -> bool {
+    source_type.eq_ignore_ascii_case("fb2") && matches!(requested, "epub" | "mobi")
+}
 
 fn filename_pair(
     book: &BookWithRemote,
@@ -35,19 +76,21 @@ pub async fn download(
     book_file_type: &str,
     source_config: &config::SourceConfig,
 ) -> Result<(Response, bool), DownloadError> {
-    let basic_url = &source_config.url;
+    let source = source_label(&source_config.url);
+    let book_file_type = book_file_type.to_lowercase();
+    let book_file_type = book_file_type.as_str();
 
-    let mut base = match Url::parse(basic_url) {
+    let mut base = match Url::parse(&source_config.url) {
         Ok(v) => v,
         Err(err) => {
             metrics::counter!(
                 "downloader_source_requests_total",
-                "source" => source_config.url.clone(),
+                "source" => source.clone(),
                 "outcome" => "invalid_base_url"
             )
             .increment(1);
             warn!(
-                source = %source_config.url,
+                source = %source,
                 book_id,
                 file_type = book_file_type,
                 stage = "mirror_fetch",
@@ -63,11 +106,7 @@ pub async fn download(
         base.set_path(&path_with_slash);
     }
 
-    let book_file_type_lower = book_file_type.to_lowercase();
-    let relative = if book_file_type_lower == "fb2"
-        || book_file_type_lower == "epub"
-        || book_file_type_lower == "mobi"
-    {
+    let relative = if matches!(book_file_type, "fb2" | "epub" | "mobi") {
         format!("b/{book_id}/{book_file_type}")
     } else {
         format!("b/{book_id}/download")
@@ -78,12 +117,12 @@ pub async fn download(
         Err(err) => {
             metrics::counter!(
                 "downloader_source_requests_total",
-                "source" => source_config.url.clone(),
+                "source" => source.clone(),
                 "outcome" => "invalid_base_url"
             )
             .increment(1);
             warn!(
-                source = %source_config.url,
+                source = %source,
                 book_id,
                 file_type = book_file_type,
                 stage = "mirror_fetch",
@@ -102,12 +141,15 @@ pub async fn download(
         Err(err) => {
             metrics::counter!(
                 "downloader_source_requests_total",
-                "source" => source_config.url.clone(),
+                "source" => source.clone(),
                 "outcome" => "request_error"
             )
             .increment(1);
+            // `reqwest::Error` Display may embed the request URL (with userinfo);
+            // drop it and log only the error kind.
+            let err = err.without_url();
             warn!(
-                source = %source_config.url,
+                source = %source,
                 book_id,
                 file_type = book_file_type,
                 stage = "mirror_fetch",
@@ -123,12 +165,13 @@ pub async fn download(
         Err(err) => {
             metrics::counter!(
                 "downloader_source_requests_total",
-                "source" => source_config.url.clone(),
+                "source" => source.clone(),
                 "outcome" => "http_error"
             )
             .increment(1);
+            let err = err.without_url();
             warn!(
-                source = %source_config.url,
+                source = %source,
                 book_id,
                 file_type = book_file_type,
                 stage = "mirror_fetch",
@@ -145,10 +188,10 @@ pub async fn download(
         None => "",
     };
 
-    if book_file_type_lower == "html" && content_type.contains("text/html") {
+    if book_file_type == "html" && content_type.contains("text/html") {
         metrics::counter!(
             "downloader_source_requests_total",
-            "source" => source_config.url.clone(),
+            "source" => source.clone(),
             "outcome" => "success"
         )
         .increment(1);
@@ -160,12 +203,12 @@ pub async fn download(
     if content_type.contains("text/html") {
         metrics::counter!(
             "downloader_source_requests_total",
-            "source" => source_config.url.clone(),
+            "source" => source.clone(),
             "outcome" => "unexpected_html"
         )
         .increment(1);
         warn!(
-            source = %source_config.url,
+            source = %source,
             book_id,
             file_type = book_file_type,
             stage = "mirror_fetch",
@@ -176,7 +219,7 @@ pub async fn download(
 
     metrics::counter!(
         "downloader_source_requests_total",
-        "source" => source_config.url.clone(),
+        "source" => source.clone(),
         "outcome" => "success"
     )
     .increment(1);
@@ -196,23 +239,33 @@ pub async fn download_chain(
     normalized: bool,
     limits: config::DownloadLimits,
 ) -> Result<DownloadResult, DownloadError> {
+    let file_type = file_type.to_lowercase();
+    let source = source_label(&source_config.url);
+
+    if converting && !conversion_fallback_allowed(&book.file_type, &file_type) {
+        return Err(DownloadError::Internal(
+            "unsupported conversion requested".to_string(),
+        ));
+    }
+
     let final_need_zip = file_type == "fb2zip";
 
-    let file_type_ = if converting {
-        book.file_type.clone()
+    // Converting always starts from the fb2 source; otherwise fetch what was requested.
+    let fetch_type = if converting {
+        "fb2"
     } else {
-        file_type.clone()
+        mirror_file_type(&file_type)
     };
 
-    let (mut response, is_zip) = download(book.remote_id, &file_type_, &source_config).await?;
+    let (mut response, is_zip) = download(book.remote_id, fetch_type, &source_config).await?;
 
-    if is_zip && book.file_type.to_lowercase() == "html" {
+    if is_zip && !converting && file_type == "html" {
         let (filename, filename_ascii) = filename_pair(&book, &file_type, true, normalized);
         let (data, data_size) = response_to_download_data(response, limits.max_download_bytes)
             .await
             .inspect_err(|_| {
                 warn!(
-                    source = %source_config.url,
+                    source = %source,
                     book_id = book.remote_id,
                     file_type = %file_type,
                     stage = "buffer_response",
@@ -228,13 +281,15 @@ pub async fn download_chain(
         ));
     }
 
-    if !is_zip && !final_need_zip && !converting {
+    let unzip_needed = needs_unzip(fetch_type, is_zip);
+
+    if !converting && !final_need_zip && !unzip_needed {
         let (filename, filename_ascii) = filename_pair(&book, &file_type, false, normalized);
         let (data, data_size) = response_to_download_data(response, limits.max_download_bytes)
             .await
             .inspect_err(|_| {
                 warn!(
-                    source = %source_config.url,
+                    source = %source,
                     book_id = book.remote_id,
                     file_type = %file_type,
                     stage = "buffer_response",
@@ -250,25 +305,26 @@ pub async fn download_chain(
         ));
     };
 
-    let (unzipped_temp_file, data_size) = {
-        let (temp_file_to_unzip, _) =
-            response_to_tempfile(&mut response, limits.max_download_bytes, 5 * 1024 * 1024)
-                .await
-                .inspect_err(|_| {
-                    warn!(
-                        source = %source_config.url,
-                        book_id = book.remote_id,
-                        file_type = %file_type,
-                        stage = "buffer_response",
-                        "failed to buffer zip response body to a temp file"
-                    );
-                })?;
+    let (buffered_file, buffered_size) =
+        response_to_tempfile(&mut response, limits.max_download_bytes, 5 * 1024 * 1024)
+            .await
+            .inspect_err(|_| {
+                warn!(
+                    source = %source,
+                    book_id = book.remote_id,
+                    file_type = %file_type,
+                    stage = "buffer_response",
+                    "failed to buffer response body to a temp file"
+                );
+            })?;
 
+    let (unzipped_temp_file, data_size) = if unzip_needed {
+        let expected_inner = fetch_type.to_string();
         let unzip_start = Instant::now();
         let unzip_result = match tokio::task::spawn_blocking(move || {
             unzip(
-                temp_file_to_unzip,
-                "fb2",
+                buffered_file,
+                &expected_inner,
                 limits.max_decompressed_bytes,
                 limits.max_compression_ratio,
             )
@@ -280,7 +336,7 @@ pub async fn download_chain(
                 metrics::histogram!("download_stage_duration_seconds", "stage" => "unzip")
                     .record(unzip_start.elapsed().as_secs_f64());
                 error!(
-                    source = %source_config.url,
+                    source = %source,
                     book_id = book.remote_id,
                     file_type = %file_type,
                     stage = "unzip",
@@ -297,7 +353,7 @@ pub async fn download_chain(
             Ok(v) => v,
             Err(err) => {
                 warn!(
-                    source = %source_config.url,
+                    source = %source,
                     book_id = book.remote_id,
                     file_type = %file_type,
                     stage = "unzip",
@@ -307,6 +363,9 @@ pub async fn download_chain(
                 return Err(err);
             }
         }
+    } else {
+        // Raw (non-zipped) fb2 served for an fb2zip request or for conversion.
+        (buffered_file, buffered_size)
     };
 
     let (clean_file, data_size) = if converting {
@@ -314,7 +373,7 @@ pub async fn download_chain(
             .await
             .map_err(|err| {
                 warn!(
-                    source = %source_config.url,
+                    source = %source,
                     book_id = book.remote_id,
                     file_type = %file_type,
                     stage = "convert",
@@ -332,7 +391,7 @@ pub async fn download_chain(
         .await
         .inspect_err(|_| {
             warn!(
-                source = %source_config.url,
+                source = %source,
                 book_id = book.remote_id,
                 file_type = %file_type,
                 stage = "buffer_response",
@@ -354,14 +413,10 @@ pub async fn download_chain(
         ));
     };
 
-    let t_file_type = if file_type == "fb2zip" {
-        "fb2"
-    } else {
-        &file_type
-    };
+    let t_file_type = "fb2";
     let filename = get_filename_by_book(&book, t_file_type, false, false, normalized);
     let stored = is_precompressed_file_type(t_file_type);
-    let compression_level = config::CONFIG.zip_compression_level;
+    let compression_level = limits.zip_compression_level;
 
     let zip_start = Instant::now();
     let zip_result = match tokio::task::spawn_blocking(move || {
@@ -374,7 +429,7 @@ pub async fn download_chain(
             metrics::histogram!("download_stage_duration_seconds", "stage" => "zip")
                 .record(zip_start.elapsed().as_secs_f64());
             error!(
-                source = %source_config.url,
+                source = %source,
                 book_id = book.remote_id,
                 file_type = %file_type,
                 stage = "zip",
@@ -400,7 +455,7 @@ pub async fn download_chain(
         }
         Err(err) => {
             warn!(
-                source = %source_config.url,
+                source = %source,
                 book_id = book.remote_id,
                 file_type = %file_type,
                 stage = "zip",
@@ -412,46 +467,87 @@ pub async fn download_chain(
     }
 }
 
+/// Runs one mirror attempt under `attempt_timeout`. A timeout counts as a
+/// mirror failure so that the next mirror is tried.
+async fn attempt_chain(
+    book: &std::sync::Arc<BookWithRemote>,
+    file_type: &str,
+    source_config: &config::SourceConfig,
+    converting: bool,
+    normalized: bool,
+    limits: config::DownloadLimits,
+    attempt_timeout: Duration,
+) -> Result<DownloadResult, DownloadError> {
+    let fut = download_chain(
+        std::sync::Arc::clone(book),
+        file_type.to_string(),
+        source_config.clone(),
+        converting,
+        normalized,
+        limits,
+    );
+    match tokio::time::timeout(attempt_timeout, fut).await {
+        Ok(result) => result,
+        Err(_) => {
+            warn!(
+                source = %source_label(&source_config.url),
+                book_id = book.remote_id,
+                file_type,
+                converting,
+                "mirror attempt timed out"
+            );
+            Err(DownloadError::SourceUnavailable)
+        }
+    }
+}
+
 pub async fn start_download_futures(
     book: &BookWithRemote,
     file_type: &str,
     normalized: bool,
     sources: &[config::SourceConfig],
     limits: config::DownloadLimits,
-    overall_deadline: std::time::Duration,
+    attempt_timeout: Duration,
+    overall_deadline: Duration,
 ) -> Result<DownloadResult, DownloadError> {
     let book = std::sync::Arc::new(book.clone());
+    let file_type = file_type.to_lowercase();
+    let can_convert = conversion_fallback_allowed(&book.file_type, &file_type);
 
     let attempt = async {
         let mut last_err = DownloadError::SourceUnavailable;
 
         for source_config in sources {
-            match download_chain(
-                std::sync::Arc::clone(&book),
-                file_type.to_string(),
-                source_config.clone(),
+            match attempt_chain(
+                &book,
+                &file_type,
+                source_config,
                 false,
                 normalized,
                 limits,
+                attempt_timeout,
             )
             .await
             {
                 Ok(result) => return Ok(result),
+                Err(err) if !err.is_mirror_failure() => return Err(err),
                 Err(err) => last_err = err,
             }
 
-            if file_type == "epub" || file_type == "fb2" {
-                match download_chain(
-                    std::sync::Arc::clone(&book),
-                    file_type.to_string(),
-                    source_config.clone(),
+            if can_convert {
+                match attempt_chain(
+                    &book,
+                    &file_type,
+                    source_config,
                     true,
                     normalized,
                     limits,
+                    attempt_timeout,
                 )
                 .await
                 {
                     Ok(result) => return Ok(result),
+                    Err(err) if !err.is_mirror_failure() => return Err(err),
                     Err(err) => last_err = err,
                 }
             }
@@ -472,7 +568,15 @@ pub async fn book_download(
     file_type: &str,
     normalized: bool,
 ) -> Result<DownloadResult, DownloadError> {
-    let book = get_remote_book(source_id, remote_id).await?;
+    let overall = config::CONFIG.overall_download_timeout;
+    let started = Instant::now();
+
+    let book = match tokio::time::timeout(overall, get_remote_book(source_id, remote_id)).await {
+        Ok(result) => result?,
+        Err(_) => return Err(DownloadError::Timeout),
+    };
+
+    let remaining = overall.saturating_sub(started.elapsed());
 
     start_download_futures(
         &book,
@@ -480,7 +584,8 @@ pub async fn book_download(
         normalized,
         &config::CONFIG.fl_sources,
         config::CONFIG.download_limits,
-        config::CONFIG.overall_download_timeout,
+        config::CONFIG.mirror_attempt_timeout,
+        remaining,
     )
     .await
 }
@@ -534,6 +639,7 @@ mod tests {
             max_download_bytes: 5 * 1024 * 1024,
             max_decompressed_bytes: 5 * 1024 * 1024,
             max_compression_ratio: 1000,
+            zip_compression_level: 6,
         }
     }
 
@@ -674,6 +780,7 @@ mod tests {
             &[source_config],
             generous_limits(),
             std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(5),
         )
         .await;
 
@@ -712,6 +819,7 @@ mod tests {
             true,
             &[stalling_source, working_source],
             generous_limits(),
+            std::time::Duration::from_secs(5),
             std::time::Duration::from_secs(10),
         )
         .await;
@@ -743,6 +851,7 @@ mod tests {
             true,
             &[stalling_source],
             generous_limits(),
+            std::time::Duration::from_secs(5),
             std::time::Duration::from_millis(300),
         )
         .await;
@@ -900,7 +1009,7 @@ mod tests {
     async fn corrupt_zip_body_returns_err_instead_of_panicking() {
         let body = b"this is not a zip file";
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: {}\r\n\r\n{}",
             body.len(),
             std::str::from_utf8(body).unwrap()
         );
@@ -936,6 +1045,7 @@ mod tests {
             max_download_bytes: 10,
             max_decompressed_bytes: 5 * 1024 * 1024,
             max_compression_ratio: 1000,
+            zip_compression_level: 6,
         };
 
         let result = download_chain(
@@ -953,7 +1063,7 @@ mod tests {
 
     #[test]
     fn mirror_http_error_is_logged_and_counted() {
-        let _log_lock = LOG_TEST_LOCK.lock().unwrap();
+        let _log_lock = LOG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -984,8 +1094,8 @@ mod tests {
             "expected the http-error log line, got: {logs}"
         );
         assert!(
-            logs.contains(&base_url),
-            "expected the log line to name the source URL, got: {logs}"
+            logs.contains(&source_label(&base_url)),
+            "expected the log line to name the source host, got: {logs}"
         );
 
         let snapshot = snapshotter.snapshot().into_vec();
@@ -1003,7 +1113,7 @@ mod tests {
 
     #[test]
     fn mirror_connect_failure_is_logged_and_counted() {
-        let _log_lock = LOG_TEST_LOCK.lock().unwrap();
+        let _log_lock = LOG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1056,7 +1166,7 @@ mod tests {
 
     #[test]
     fn unzip_failure_is_logged_with_stage() {
-        let _log_lock = LOG_TEST_LOCK.lock().unwrap();
+        let _log_lock = LOG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1072,7 +1182,7 @@ mod tests {
             rt.block_on(async {
                 let body = b"this is not a zip file";
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n{}",
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: {}\r\n\r\n{}",
                     body.len(),
                     std::str::from_utf8(body).unwrap()
                 );
@@ -1129,8 +1239,8 @@ mod tests {
 
         let request = received.lock().unwrap().clone();
         assert!(
-            request.starts_with("GET /b/42/FB2 "),
-            "an uppercase FB2 book_file_type must still take the type-specific URL branch, got: {request:?}"
+            request.starts_with("GET /b/42/fb2 "),
+            "an uppercase FB2 book_file_type must be lowercased in the mirror URL, got: {request:?}"
         );
     }
 
@@ -1231,5 +1341,177 @@ mod tests {
                 "unexpected Authorization header, got: {request:?}"
             );
         }
+    }
+
+    #[test]
+    fn conversion_matrix() {
+        assert!(conversion_fallback_allowed("fb2", "epub"));
+        assert!(conversion_fallback_allowed("fb2", "mobi"));
+        assert!(!conversion_fallback_allowed("fb2", "fb2"));
+        assert!(!conversion_fallback_allowed("fb2", "fb2zip"));
+        assert!(!conversion_fallback_allowed("fb2", "pdf"));
+        assert!(!conversion_fallback_allowed("epub", "mobi"));
+        assert!(!conversion_fallback_allowed("pdf", "epub"));
+        assert!(!conversion_fallback_allowed("html", "epub"));
+    }
+
+    #[test]
+    fn unzip_decision() {
+        assert!(needs_unzip("fb2", true));
+        assert!(needs_unzip("fb2zip", true) || needs_unzip(mirror_file_type("fb2zip"), true));
+        assert!(!needs_unzip("fb2", false));
+        assert!(!needs_unzip("epub", true));
+        assert!(!needs_unzip("mobi", true));
+        assert!(!needs_unzip("pdf", true));
+    }
+
+    #[test]
+    fn mirror_failure_classification() {
+        assert!(DownloadError::SourceUnavailable.is_mirror_failure());
+        assert!(DownloadError::BadArchive.is_mirror_failure());
+        assert!(!DownloadError::ConverterFailed(500).is_mirror_failure());
+        assert!(!DownloadError::ConverterUnavailable.is_mirror_failure());
+        assert!(!DownloadError::TooLarge.is_mirror_failure());
+        assert!(!DownloadError::LocalIo("x".into()).is_mirror_failure());
+        assert!(!DownloadError::Timeout.is_mirror_failure());
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn too_large_stops_failover_to_next_mirror() {
+        let _log_lock = LOG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let response =
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/fb2\r\nContent-Length: 100\r\n\r\n"
+                .to_vec();
+        let (first_url, first_hits) = spawn_counting_server(response.clone()).await;
+        let (second_url, second_hits) = spawn_counting_server(response).await;
+        let limits = config::DownloadLimits {
+            max_download_bytes: 10,
+            max_decompressed_bytes: 5 * 1024 * 1024,
+            max_compression_ratio: 1000,
+            zip_compression_level: 6,
+        };
+
+        let result = start_download_futures(
+            &make_book("pdf"),
+            "pdf",
+            true,
+            &[
+                make_source_config(first_url),
+                make_source_config(second_url),
+            ],
+            limits,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        assert!(matches!(result, Err(DownloadError::TooLarge)));
+        assert_eq!(first_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(second_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn non_fb2_source_is_not_converted_on_mirror_failure() {
+        let _log_lock = LOG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (url, hits) =
+            spawn_counting_server(b"HTTP/1.1 500 Oops\r\nContent-Length: 0\r\n\r\n".to_vec()).await;
+
+        let result = start_download_futures(
+            &make_book("epub"),
+            "epub",
+            true,
+            &[make_source_config(url)],
+            generous_limits(),
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn pdf_is_served_as_is() {
+        let body = b"%PDF-1.4 fake";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            std::str::from_utf8(body).unwrap()
+        );
+        let base_url = spawn_raw_server(response.into_bytes()).await;
+
+        let data = download_chain(
+            std::sync::Arc::new(make_book("pdf")),
+            "pdf".to_string(),
+            make_source_config(base_url),
+            false,
+            true,
+            generous_limits(),
+        )
+        .await
+        .expect("pdf should be served as-is");
+
+        assert!(data.filename.ends_with(".pdf"));
+        assert_eq!(data.data_size, body.len());
+    }
+
+    #[tokio::test]
+    async fn epub_served_as_zip_is_returned_as_is() {
+        let body = b"PK fake epub bytes";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            std::str::from_utf8(body).unwrap()
+        );
+        let base_url = spawn_raw_server(response.into_bytes()).await;
+
+        let data = download_chain(
+            std::sync::Arc::new(make_book("fb2")),
+            "epub".to_string(),
+            make_source_config(base_url),
+            false,
+            true,
+            generous_limits(),
+        )
+        .await
+        .expect("epub zip should not be unzipped");
+
+        assert_eq!(data.data_size, body.len());
+        assert!(data.filename.ends_with(".epub"));
+    }
+
+    #[tokio::test]
+    async fn raw_fb2_for_fb2zip_request_is_zipped() {
+        let body = b"<FictionBook/>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/x-fictionbook+xml\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            std::str::from_utf8(body).unwrap()
+        );
+        let base_url = spawn_raw_server(response.into_bytes()).await;
+
+        let data = download_chain(
+            std::sync::Arc::new(make_book("fb2")),
+            "fb2zip".to_string(),
+            make_source_config(base_url),
+            false,
+            true,
+            generous_limits(),
+        )
+        .await
+        .expect("raw fb2 should be zipped");
+
+        assert!(data.filename.ends_with(".fb2.zip"));
+        let Data::SpooledTempFile(file) = data.data else {
+            panic!("expected a temp file");
+        };
+        let (mut inner, size) = unzip(file, "fb2", 1 << 20, 1000).expect("result must be a zip");
+        let mut contents = Vec::new();
+        std::io::Read::read_to_end(&mut inner, &mut contents).unwrap();
+        assert_eq!(contents, body);
+        assert_eq!(size, body.len());
     }
 }

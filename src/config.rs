@@ -1,9 +1,75 @@
 use once_cell::sync::Lazy;
+use reqwest::Url;
 use serde::Deserialize;
 use std::time::Duration;
 
 fn get_env(env: &'static str) -> String {
     std::env::var(env).unwrap_or_else(|_| panic!("Cannot get the {} env variable", env))
+}
+
+fn require_non_empty(value: String, env: &'static str) -> String {
+    if value.trim().is_empty() {
+        panic!("{env} must not be empty");
+    }
+    value
+}
+
+fn get_secret_env(env: &'static str) -> String {
+    require_non_empty(get_env(env), env)
+}
+
+fn validate_zip_compression_level(level: i64) -> i64 {
+    if !(0..=9).contains(&level) {
+        panic!("ZIP_COMPRESSION_LEVEL must be in 0..=9, got {level}");
+    }
+    level
+}
+
+fn validate_compression_ratio(ratio: u64) -> u64 {
+    if ratio == 0 {
+        panic!("MAX_COMPRESSION_RATIO must be greater than 0");
+    }
+    ratio
+}
+
+fn validate_positive_usize(value: usize, env: &'static str) -> usize {
+    if value == 0 {
+        panic!("{env} must be greater than 0");
+    }
+    value
+}
+
+/// Parses a base URL from an env value and makes sure its path ends with `/`,
+/// so that `Url::join` appends relative paths instead of replacing the last
+/// path segment.
+fn parse_base_url(raw: &str, env: &'static str) -> Url {
+    let mut url =
+        Url::parse(raw.trim()).unwrap_or_else(|err| panic!("{env} must be a valid URL: {err}"));
+    if !url.path().ends_with('/') {
+        let path = format!("{}/", url.path());
+        url.set_path(&path);
+    }
+    url
+}
+
+/// Joins a relative path (built from numeric ids / allowlisted file types only)
+/// onto a base URL produced by `parse_base_url`.
+pub fn join_url(base: &Url, relative: &str) -> Url {
+    base.join(relative.trim_start_matches('/'))
+        .expect("relative path built from ids and allowlisted types must join onto a base URL")
+}
+
+/// Host (and port) of a mirror URL, suitable for logs and metric labels.
+/// Never includes userinfo, path or query.
+pub fn source_label(raw: &str) -> String {
+    match Url::parse(raw) {
+        Ok(url) => match (url.host_str(), url.port()) {
+            (Some(host), Some(port)) => format!("{host}:{port}"),
+            (Some(host), None) => host.to_string(),
+            _ => "invalid".to_string(),
+        },
+        Err(_) => "invalid".to_string(),
+    }
 }
 
 fn parse_usize_or(raw: Option<&str>, env: &'static str, default: usize) -> usize {
@@ -119,6 +185,8 @@ pub struct DownloadLimits {
     pub max_download_bytes: usize,
     pub max_decompressed_bytes: u64,
     pub max_compression_ratio: u64,
+    /// DEFLATE level (0-9) for result ZIP archives (`ZIP_COMPRESSION_LEVEL`).
+    pub zip_compression_level: i64,
 }
 
 pub struct Config {
@@ -127,9 +195,9 @@ pub struct Config {
     pub fl_sources: Vec<SourceConfig>,
 
     pub book_library_api_key: String,
-    pub book_library_url: String,
+    pub book_library_url: Url,
 
-    pub converter_url: String,
+    pub converter_url: Url,
     pub converter_api_key: String,
 
     pub sentry_dsn: Option<String>,
@@ -137,14 +205,21 @@ pub struct Config {
     pub download_limits: DownloadLimits,
 
     /// Wall-clock deadline for the whole `/download` failover loop across all
-    /// mirrors. Configurable via `DOWNLOAD_TIMEOUT_SECS` (default 300s).
+    /// mirrors, including the book_library metadata fetch. Configurable via
+    /// `DOWNLOAD_TIMEOUT_SECS` (default 115s; callers wait 120s).
     pub overall_download_timeout: Duration,
 
-    /// DEFLATE compression level (0-9) used when producing result ZIP archives.
-    /// Configurable via `ZIP_COMPRESSION_LEVEL` (default 6). Lower values trade
-    /// smaller output for less CPU time; ignored for already-compressed inputs
-    /// (zip/epub), which are stored uncompressed instead.
-    pub zip_compression_level: i64,
+    /// Wall-clock limit of one mirror attempt (fetch + unzip/convert/zip).
+    /// Configurable via `MIRROR_ATTEMPT_TIMEOUT_SECS` (default 45s).
+    pub mirror_attempt_timeout: Duration,
+
+    /// Timeout of a single converter request. Configurable via
+    /// `CONVERTER_TIMEOUT_SECS` (default 100s).
+    pub converter_timeout: Duration,
+
+    /// Max number of downloads processed at once. Configurable via
+    /// `MAX_CONCURRENT_DOWNLOADS` (default 8).
+    pub max_concurrent_downloads: usize,
 
     /// In-memory spool threshold used when buffering a converter response to a
     /// temp file ahead of a subsequent ZIP step. Smaller than the general 5 MiB
@@ -159,19 +234,19 @@ impl Config {
         let mirror_request_timeout = parse_duration_secs_or(
             std::env::var("MIRROR_TIMEOUT_SECS").ok().as_deref(),
             "MIRROR_TIMEOUT_SECS",
-            300,
+            45,
         );
 
         Config {
-            api_key: get_env("API_KEY"),
+            api_key: get_secret_env("API_KEY"),
 
             fl_sources: parse_fl_sources(&get_env("FL_SOURCES"), mirror_request_timeout),
 
-            book_library_api_key: get_env("BOOK_LIBRARY_API_KEY"),
-            book_library_url: get_env("BOOK_LIBRARY_URL"),
+            book_library_api_key: get_secret_env("BOOK_LIBRARY_API_KEY"),
+            book_library_url: parse_base_url(&get_env("BOOK_LIBRARY_URL"), "BOOK_LIBRARY_URL"),
 
-            converter_url: get_env("CONVERTER_URL"),
-            converter_api_key: get_env("CONVERTER_API_KEY"),
+            converter_url: parse_base_url(&get_env("CONVERTER_URL"), "CONVERTER_URL"),
+            converter_api_key: get_secret_env("CONVERTER_API_KEY"),
 
             sentry_dsn: std::env::var("SENTRY_DSN").ok(),
 
@@ -186,23 +261,43 @@ impl Config {
                     "MAX_DECOMPRESSED_BYTES",
                     512 * 1024 * 1024,
                 ),
-                max_compression_ratio: parse_u64_or(
+                max_compression_ratio: validate_compression_ratio(parse_u64_or(
                     std::env::var("MAX_COMPRESSION_RATIO").ok().as_deref(),
                     "MAX_COMPRESSION_RATIO",
                     100,
-                ),
+                )),
+                zip_compression_level: validate_zip_compression_level(parse_i64_or(
+                    std::env::var("ZIP_COMPRESSION_LEVEL").ok().as_deref(),
+                    "ZIP_COMPRESSION_LEVEL",
+                    6,
+                )),
             },
 
             overall_download_timeout: parse_duration_secs_or(
                 std::env::var("DOWNLOAD_TIMEOUT_SECS").ok().as_deref(),
                 "DOWNLOAD_TIMEOUT_SECS",
-                300,
+                115,
             ),
 
-            zip_compression_level: parse_i64_or(
-                std::env::var("ZIP_COMPRESSION_LEVEL").ok().as_deref(),
-                "ZIP_COMPRESSION_LEVEL",
-                6,
+            mirror_attempt_timeout: parse_duration_secs_or(
+                std::env::var("MIRROR_ATTEMPT_TIMEOUT_SECS").ok().as_deref(),
+                "MIRROR_ATTEMPT_TIMEOUT_SECS",
+                45,
+            ),
+
+            converter_timeout: parse_duration_secs_or(
+                std::env::var("CONVERTER_TIMEOUT_SECS").ok().as_deref(),
+                "CONVERTER_TIMEOUT_SECS",
+                100,
+            ),
+
+            max_concurrent_downloads: validate_positive_usize(
+                parse_usize_or(
+                    std::env::var("MAX_CONCURRENT_DOWNLOADS").ok().as_deref(),
+                    "MAX_CONCURRENT_DOWNLOADS",
+                    8,
+                ),
+                "MAX_CONCURRENT_DOWNLOADS",
             ),
 
             converted_response_spool_bytes: parse_usize_or(
@@ -274,6 +369,54 @@ mod tests {
             r#"[{"url": "http://example.com", "proxy": "not a valid proxy url"}]"#,
             Duration::from_secs(5),
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "ZIP_COMPRESSION_LEVEL must be in 0..=9")]
+    fn zip_level_out_of_range_panics() {
+        validate_zip_compression_level(10);
+    }
+
+    #[test]
+    fn zip_level_in_range_is_accepted() {
+        assert_eq!(validate_zip_compression_level(0), 0);
+        assert_eq!(validate_zip_compression_level(9), 9);
+    }
+
+    #[test]
+    #[should_panic(expected = "MAX_COMPRESSION_RATIO must be greater than 0")]
+    fn zero_compression_ratio_panics() {
+        validate_compression_ratio(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "API_KEY must not be empty")]
+    fn blank_secret_panics() {
+        require_non_empty("  ".to_string(), "API_KEY");
+    }
+
+    #[test]
+    fn base_url_join_handles_slashes() {
+        for raw in ["http://conv:8080/api", "http://conv:8080/api/"] {
+            let base = parse_base_url(raw, "X");
+            assert_eq!(
+                join_url(&base, "epub").as_str(),
+                "http://conv:8080/api/epub"
+            );
+            assert_eq!(
+                join_url(&base, "/epub").as_str(),
+                "http://conv:8080/api/epub"
+            );
+        }
+    }
+
+    #[test]
+    fn source_label_hides_userinfo_and_path() {
+        assert_eq!(
+            source_label("http://user:pass@mirror.example:8080/secret?x=1"),
+            "mirror.example:8080"
+        );
+        assert_eq!(source_label("not a url"), "invalid");
     }
 
     #[test]

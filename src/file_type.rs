@@ -8,6 +8,13 @@ pub enum FileType {
     Epub,
     Mobi,
     Html,
+    Pdf,
+    Djvu,
+    Djv,
+    Txt,
+    Rtf,
+    Doc,
+    Docx,
 }
 
 impl FileType {
@@ -18,6 +25,13 @@ impl FileType {
             FileType::Epub => "epub",
             FileType::Mobi => "mobi",
             FileType::Html => "html",
+            FileType::Pdf => "pdf",
+            FileType::Djvu => "djvu",
+            FileType::Djv => "djv",
+            FileType::Txt => "txt",
+            FileType::Rtf => "rtf",
+            FileType::Doc => "doc",
+            FileType::Docx => "docx",
         }
     }
 }
@@ -38,6 +52,13 @@ mod tests {
         assert_eq!(parse("epub").unwrap(), FileType::Epub);
         assert_eq!(parse("mobi").unwrap(), FileType::Mobi);
         assert_eq!(parse("html").unwrap(), FileType::Html);
+        assert_eq!(parse("pdf").unwrap(), FileType::Pdf);
+        assert_eq!(parse("djvu").unwrap(), FileType::Djvu);
+        assert_eq!(parse("djv").unwrap(), FileType::Djv);
+        assert_eq!(parse("txt").unwrap(), FileType::Txt);
+        assert_eq!(parse("rtf").unwrap(), FileType::Rtf);
+        assert_eq!(parse("doc").unwrap(), FileType::Doc);
+        assert_eq!(parse("docx").unwrap(), FileType::Docx);
     }
 
     #[test]
@@ -60,7 +81,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_extension() {
-        assert!(parse("pdf").is_err());
+        assert!(parse("exe").is_err());
     }
 
     #[test]
@@ -76,6 +97,13 @@ mod tests {
             FileType::Epub,
             FileType::Mobi,
             FileType::Html,
+            FileType::Pdf,
+            FileType::Djvu,
+            FileType::Djv,
+            FileType::Txt,
+            FileType::Rtf,
+            FileType::Doc,
+            FileType::Docx,
         ] {
             assert_eq!(parse(ft.as_str()).unwrap(), ft);
         }
