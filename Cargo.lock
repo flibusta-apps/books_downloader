@@ -2542,9 +2542,12 @@ dependencies = [
 
 [[package]]
 name = "translit"
-version = "0.6.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afd2b9a33a7152d3cc7622a1076dc3eccd775376dd34987e69bbf4de4a0648eb"
+checksum = "c7d1fcf46742aa7278bd516f254cca8a8a1fc61cb7d1aa4a8f2e8d9fcd426df1"
+dependencies = [
+ "aho-corasick",
+]
 
 [[package]]
 name = "try-lock"
