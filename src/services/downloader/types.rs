@@ -13,6 +13,52 @@ pub enum Data {
     SpooledTempFile(SpooledTempFile),
 }
 
+/// A bounded body pump with an independent watchdog: timing out only inside
+/// `poll_next` would not release the slot when a client stops polling entirely.
+pub fn idle_timeout_stream(
+    mut reader: Pin<Box<dyn AsyncRead + Send>>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+    idle: std::time::Duration,
+) -> impl futures::Stream<Item = std::io::Result<Bytes>> {
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    tokio::spawn(async move {
+        let _permit = permit;
+        loop {
+            let progress = async {
+                let mut buf = vec![0; 64 * 1024];
+                let n = reader.read(&mut buf).await?;
+                if n == 0 {
+                    return Ok(false);
+                }
+                buf.truncate(n);
+                Ok::<_, std::io::Error>(tx.send(Ok(Bytes::from(buf))).await.is_ok())
+            };
+            tokio::select! {
+                _ = tx.closed() => break,
+                result = tokio::time::timeout(idle, progress) => {
+                    match result {
+                        Ok(Ok(true)) => {},
+                        Ok(Ok(false)) => break,
+                        Ok(Err(err)) => {
+                            let _ = tx.try_send(Err(err));
+                            break;
+                        }
+                        Err(_) => {
+                            let _ = tx.try_send(Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut, "response body idle timeout",
+                            )));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    });
+    futures::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    })
+}
+
 pub struct DownloadResult {
     pub data: Data,
     pub filename: String,
@@ -93,6 +139,38 @@ impl DownloadResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn unpolled_body_releases_permit_after_idle_timeout() {
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let reader = Box::pin(std::io::Cursor::new(vec![1u8; 256 * 1024]));
+        let _unpolled_stream =
+            idle_timeout_stream(reader, permit, std::time::Duration::from_millis(20));
+        let _new_permit =
+            tokio::time::timeout(std::time::Duration::from_secs(1), semaphore.acquire())
+                .await
+                .expect("idle body must release the permit without being polled")
+                .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stalled_reader_ends_body_and_releases_permit() {
+        use futures::StreamExt;
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let (_writer, reader) = tokio::io::duplex(64);
+        let stream = idle_timeout_stream(
+            Box::pin(reader),
+            permit,
+            std::time::Duration::from_millis(20),
+        );
+        futures::pin_mut!(stream);
+        let err = stream.next().await.unwrap().unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(stream.next().await.is_none());
+        assert_eq!(semaphore.available_permits(), 1);
+    }
 
     #[tokio::test]
     async fn limit_async_read_truncates_to_declared_length() {

@@ -5,8 +5,8 @@ use zip::write::FileOptions;
 
 use super::error::DownloadError;
 
-pub fn unzip(
-    tmp_file: SpooledTempFile,
+pub fn unzip<R: Read + Seek>(
+    tmp_file: R,
     file_type: &str,
     max_decompressed_bytes: u64,
     max_compression_ratio: u64,
@@ -118,6 +118,15 @@ mod tests {
 
     const GENEROUS_MAX_DECOMPRESSED: u64 = 5 * 1024 * 1024;
     const GENEROUS_MAX_RATIO: u64 = 1000;
+
+    #[test]
+    fn cancelled_zip_stops_copy() {
+        let reader = super::super::CancellableReader(
+            std::io::Cursor::new(vec![1; 100_000]),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        );
+        assert!(zip(reader, "book.fb2", 6, false).is_err());
+    }
 
     #[test]
     fn selects_entry_by_extension_not_substring() {

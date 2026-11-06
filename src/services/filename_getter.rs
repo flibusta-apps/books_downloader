@@ -117,7 +117,7 @@ pub fn get_filename_by_book(
 
     let mut normal_filename = REPLACE_TRANSLITERATOR.convert(&filename_without_type, false);
 
-    if only_ascii && normalized {
+    if only_ascii {
         normal_filename = normal_filename.replace(|c: char| !c.is_ascii(), "");
     }
 
@@ -214,14 +214,14 @@ mod tests {
     }
 
     #[test]
-    fn not_normalized_with_only_ascii_keeps_cyrillic() {
+    fn not_normalized_with_only_ascii_is_ascii() {
         let book = make_book(
             "Приключения Кота",
             vec![author("Усачёв", "Андрей", "Александрович")],
         );
         let filename = get_filename_by_book(&book, "fb2", false, true, false);
-        // Per agreement: ascii is left as-is when normalized=false
-        assert_eq!(filename, "Усачёв_А_А_Приключения_Кота.42.fb2");
+        assert!(filename.is_ascii());
+        assert_eq!(filename, "book.42.fb2");
     }
 
     #[test]

@@ -13,10 +13,8 @@ use axum::{
 };
 use axum_prometheus::PrometheusMetricLayer;
 use base64::{engine::general_purpose, Engine};
-use futures::StreamExt;
 use serde_json::json;
 use subtle::ConstantTimeEq;
-use tokio_util::io::ReaderStream;
 use tower_http::trace::{self, TraceLayer};
 use tracing::Level;
 
@@ -36,8 +34,22 @@ pub struct FilenameParams {
 }
 
 fn content_disposition_value(filename: &str) -> String {
-    let escaped = filename.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("attachment; filename=\"{escaped}\"")
+    let fallback: String = filename
+        .chars()
+        .filter(|c| c.is_ascii() && !c.is_control())
+        .collect();
+    let escaped = fallback.replace('\\', "\\\\").replace('"', "\\\"");
+    let encoded: String = filename
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
+    format!("attachment; filename=\"{escaped}\"; filename*=UTF-8''{encoded}")
 }
 
 // `pub` (not module-private) purely to satisfy the `private_interfaces` lint: `download`
@@ -139,16 +151,18 @@ pub async fn download(
     let file_size = data.data_size;
 
     let reader = data.get_async_read();
-    let stream = ReaderStream::new(reader).inspect(move |_| {
-        let _keep = &permit;
-    });
+    let stream = crate::services::downloader::types::idle_timeout_stream(
+        reader,
+        permit,
+        CONFIG.body_idle_timeout,
+    );
 
     let encoder = general_purpose::STANDARD;
 
     let headers = AppendHeaders([
         (
             header::CONTENT_DISPOSITION,
-            content_disposition_value(&filename_ascii),
+            content_disposition_value(&filename),
         ),
         (header::CONTENT_LENGTH, format!("{file_size}")),
         (
@@ -281,17 +295,28 @@ mod tests {
     }
 
     #[test]
+    fn content_disposition_encodes_unicode_and_reserved_characters() {
+        let value = content_disposition_value("Книга 100%.fb2");
+        assert!(value.is_ascii());
+        assert_eq!(value, "attachment; filename=\" 100%.fb2\"; filename*=UTF-8''%D0%9A%D0%BD%D0%B8%D0%B3%D0%B0%20100%25.fb2");
+        assert!(header::HeaderValue::from_str(&value).is_ok());
+    }
+
+    #[test]
     fn content_disposition_value_quotes_plain_filename() {
         assert_eq!(
             content_disposition_value("book.fb2"),
-            "attachment; filename=\"book.fb2\""
+            "attachment; filename=\"book.fb2\"; filename*=UTF-8''book.fb2"
         );
     }
 
     #[test]
     fn content_disposition_value_escapes_quotes_and_backslashes() {
         let value = content_disposition_value("weird\"na\\me.fb2");
-        assert_eq!(value, "attachment; filename=\"weird\\\"na\\\\me.fb2\"");
+        assert_eq!(
+            value,
+            "attachment; filename=\"weird\\\"na\\\\me.fb2\"; filename*=UTF-8''weird%22na%5Cme.fb2"
+        );
     }
 
     #[test]
@@ -318,7 +343,7 @@ mod tests {
         );
         assert!(!value.chars().any(|c| c.is_control()));
         assert!(value.starts_with("attachment; filename=\""));
-        assert!(value.ends_with('"'));
+        assert!(value.contains("filename*=UTF-8''"));
     }
 
     #[test]

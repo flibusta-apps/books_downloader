@@ -1,6 +1,8 @@
 use once_cell::sync::Lazy;
 use reqwest::Url;
 use serde::Deserialize;
+use std::collections::HashSet;
+use std::net::IpAddr;
 use std::time::Duration;
 
 fn get_env(env: &'static str) -> String {
@@ -123,6 +125,102 @@ pub struct SourceConfig {
     pub client: reqwest::Client,
 }
 
+/// Exact hosts only (no URLs, ports, wildcards or suffix matching). IPv6
+/// literals may be written with or without brackets.
+fn parse_redirect_allowed_hosts(raw: &str) -> HashSet<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+        .map(|host| {
+            let host = host
+                .parse::<IpAddr>()
+                .map(|ip| match ip {
+                    IpAddr::V4(ip) => ip.to_string(),
+                    IpAddr::V6(ip) => format!("[{ip}]"),
+                })
+                .unwrap_or_else(|_| host.to_string());
+            let url = Url::parse(&format!("http://{host}/"))
+                .expect("MIRROR_REDIRECT_ALLOWED_HOSTS must contain valid hosts");
+            assert!(
+                url.host_str().is_some()
+                    && url.port().is_none()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && url.path() == "/"
+                    && url.query().is_none()
+                    && url.fragment().is_none()
+                    && (!host.contains(':') || (host.starts_with('[') && host.ends_with(']')))
+                    && !host.contains(['/', '@', '?', '#']),
+                "MIRROR_REDIRECT_ALLOWED_HOSTS must contain hosts only, without ports"
+            );
+            url.host_str().unwrap().to_string()
+        })
+        .collect()
+}
+
+fn restricted_redirect_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.is_broadcast()
+        }
+        IpAddr::V6(ip) => {
+            if let Some(ip) = ip.to_ipv4_mapped() {
+                return restricted_redirect_ip(IpAddr::V4(ip));
+            }
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || (ip.segments()[0] & 0xfe00 == 0xfc00) // unique local
+                || (ip.segments()[0] & 0xffc0 == 0xfe80) // link local
+        }
+    }
+}
+
+/// Checks literal addresses only; DNS resolution/rebinding is not covered.
+fn mirror_redirect_allowed(original: &Url, target: &Url, allowed: &HashSet<String>) -> bool {
+    if !matches!(target.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = target.host_str() else {
+        return false;
+    };
+    if allowed.contains(host) {
+        return true;
+    }
+    if host
+        .trim_matches(['[', ']'])
+        .parse::<IpAddr>()
+        .is_ok_and(restricted_redirect_ip)
+    {
+        return false;
+    }
+    original.host_str() == Some(host)
+}
+
+fn mirror_redirect_policy(allowed: HashSet<String>) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        // previous includes the initial request: permit at most five hops.
+        if attempt.previous().len() > 5 {
+            return attempt.error("mirror redirect limit exceeded");
+        }
+        if attempt
+            .previous()
+            .first()
+            .is_some_and(|original| mirror_redirect_allowed(original, attempt.url(), &allowed))
+        {
+            attempt.follow()
+        } else {
+            // Error rather than stop: never serve the rejected 3xx body as a book.
+            attempt.error("mirror redirect target is not allowed")
+        }
+    })
+}
+
 fn build_client(
     proxy: Option<&str>,
     api_key: Option<&str>,
@@ -130,6 +228,9 @@ fn build_client(
 ) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
+        .redirect(mirror_redirect_policy(parse_redirect_allowed_hosts(
+            &std::env::var("MIRROR_REDIRECT_ALLOWED_HOSTS").unwrap_or_default(),
+        )))
         .timeout(mirror_request_timeout);
 
     if let Some(v) = proxy {
@@ -209,7 +310,8 @@ pub struct Config {
     /// `DOWNLOAD_TIMEOUT_SECS` (default 115s; callers wait 120s).
     pub overall_download_timeout: Duration,
 
-    /// Wall-clock limit of one mirror attempt (fetch + unzip/convert/zip).
+    /// Wall-clock limit of fetching/preparing source bytes from one mirror.
+    /// Conversion has its own budget and is not a mirror failure.
     /// Configurable via `MIRROR_ATTEMPT_TIMEOUT_SECS` (default 45s).
     pub mirror_attempt_timeout: Duration,
 
@@ -220,6 +322,10 @@ pub struct Config {
     /// Max number of downloads processed at once. Configurable via
     /// `MAX_CONCURRENT_DOWNLOADS` (default 8).
     pub max_concurrent_downloads: usize,
+
+    /// Maximum idle time while sending a response body, including backpressure.
+    /// `BODY_IDLE_TIMEOUT_SECS` defaults to 60 seconds.
+    pub body_idle_timeout: Duration,
 
     /// In-memory spool threshold used when buffering a converter response to a
     /// temp file ahead of a subsequent ZIP step. Smaller than the general 5 MiB
@@ -300,6 +406,12 @@ impl Config {
                 "MAX_CONCURRENT_DOWNLOADS",
             ),
 
+            body_idle_timeout: parse_duration_secs_or(
+                std::env::var("BODY_IDLE_TIMEOUT_SECS").ok().as_deref(),
+                "BODY_IDLE_TIMEOUT_SECS",
+                60,
+            ),
+
             converted_response_spool_bytes: parse_usize_or(
                 std::env::var("CONVERTED_RESPONSE_SPOOL_BYTES")
                     .ok()
@@ -319,6 +431,98 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn redirect_allows_same_host_but_not_other_hosts_or_suffixes() {
+        let original = Url::parse("https://mirror.example/book").unwrap();
+        let allowed = HashSet::new();
+        for target in [
+            "https://mirror.example/new",
+            "http://mirror.example:8080/new",
+        ] {
+            assert!(mirror_redirect_allowed(
+                &original,
+                &Url::parse(target).unwrap(),
+                &allowed
+            ));
+        }
+        for target in [
+            "https://other.example/book",
+            "https://mirror.example.evil/book",
+            "http://books_archive/book",
+            "file:///etc/passwd",
+        ] {
+            assert!(!mirror_redirect_allowed(
+                &original,
+                &Url::parse(target).unwrap(),
+                &allowed
+            ));
+        }
+    }
+
+    #[test]
+    fn redirect_allowlist_is_normalized_and_exact() {
+        let original = Url::parse("https://mirror.example/book").unwrap();
+        let allowed = parse_redirect_allowed_hosts(" CDN.Example, 169.254.169.254, ::1, ,");
+        for target in [
+            "https://cdn.example/book",
+            "http://169.254.169.254/latest",
+            "http://[::1]/book",
+        ] {
+            assert!(mirror_redirect_allowed(
+                &original,
+                &Url::parse(target).unwrap(),
+                &allowed
+            ));
+        }
+        assert!(!mirror_redirect_allowed(
+            &original,
+            &Url::parse("https://cdn.example.evil/book").unwrap(),
+            &allowed,
+        ));
+    }
+
+    #[test]
+    fn restricted_ip_redirects_require_explicit_allowlisting_even_for_same_host() {
+        for host in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "0.0.0.0",
+            "224.0.0.1",
+            "255.255.255.255",
+            "[::1]",
+            "[::]",
+            "[fc00::1]",
+            "[fd12::1]",
+            "[fe80::1]",
+            "[febf::1]",
+            "[ff02::1]",
+            "[::ffff:127.0.0.1]",
+            "[::ffff:169.254.169.254]",
+            "2130706433",
+            "0x7f000001",
+        ] {
+            let url = Url::parse(&format!("http://{host}/book")).unwrap();
+            assert!(
+                !mirror_redirect_allowed(&url, &url, &HashSet::new()),
+                "{host}"
+            );
+            let allowed = parse_redirect_allowed_hosts(host);
+            assert!(mirror_redirect_allowed(&url, &url, &allowed), "{host}");
+        }
+    }
+
+    #[test]
+    fn public_ip_and_internal_archive_same_host_redirects_still_work() {
+        for host in ["8.8.8.8", "[2606:4700:4700::1111]", "books_archive"] {
+            let original = Url::parse(&format!("http://{host}/book")).unwrap();
+            let target = original.join("/download").unwrap();
+            assert!(mirror_redirect_allowed(&original, &target, &HashSet::new()));
+        }
+    }
 
     #[test]
     fn parses_valid_sources_without_proxy() {

@@ -26,6 +26,38 @@ const SEMAPHORE_WAIT: Duration = Duration::from_secs(2);
 static DOWNLOAD_SEMAPHORE: Lazy<std::sync::Arc<Semaphore>> =
     Lazy::new(|| std::sync::Arc::new(Semaphore::new(config::CONFIG.max_concurrent_downloads)));
 
+// Separate work slots remain owned by blocking tasks even if a request times out.
+static BLOCKING_SEMAPHORE: Lazy<std::sync::Arc<Semaphore>> = Lazy::new(|| {
+    #[cfg(not(test))]
+    let slots = config::CONFIG.max_concurrent_downloads;
+    #[cfg(test)]
+    let slots = 16;
+    std::sync::Arc::new(Semaphore::new(slots))
+});
+
+struct CancelOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+struct CancellableReader<R>(R, std::sync::Arc<std::sync::atomic::AtomicBool>);
+impl<R: std::io::Read> std::io::Read for CancellableReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.1.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(std::io::Error::other("download cancelled"));
+        }
+        let len = buf.len().min(64 * 1024);
+        self.0.read(&mut buf[..len])
+    }
+}
+impl<R: std::io::Seek> std::io::Seek for CancellableReader<R> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.0.seek(pos)
+    }
+}
+
 /// Acquires a global download slot. Returns `None` when saturated after a short wait.
 pub async fn acquire_download_permit() -> Option<OwnedSemaphorePermit> {
     match tokio::time::timeout(
@@ -242,6 +274,14 @@ pub async fn download_chain(
     let file_type = file_type.to_lowercase();
     let source = source_label(&source_config.url);
 
+    // Only the three format-specific endpoints can provide a non-original format.
+    if !converting
+        && !matches!(mirror_file_type(&file_type), "fb2" | "epub" | "mobi")
+        && !book.file_type.eq_ignore_ascii_case(&file_type)
+    {
+        return Err(super::book_library::error::BookLibraryError::NotFound.into());
+    }
+
     if converting && !conversion_fallback_allowed(&book.file_type, &file_type) {
         return Err(DownloadError::Internal(
             "unsupported conversion requested".to_string(),
@@ -319,11 +359,21 @@ pub async fn download_chain(
             })?;
 
     let (unzipped_temp_file, data_size) = if unzip_needed {
+        let permit = BLOCKING_SEMAPHORE
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| DownloadError::Internal(e.to_string()))?;
+        let cancellation = CancelOnDrop(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            false,
+        )));
+        let cancel = cancellation.0.clone();
         let expected_inner = fetch_type.to_string();
         let unzip_start = Instant::now();
         let unzip_result = match tokio::task::spawn_blocking(move || {
+            let _permit = permit;
             unzip(
-                buffered_file,
+                CancellableReader(buffered_file, cancel),
                 &expected_inner,
                 limits.max_decompressed_bytes,
                 limits.max_compression_ratio,
@@ -419,8 +469,23 @@ pub async fn download_chain(
     let compression_level = limits.zip_compression_level;
 
     let zip_start = Instant::now();
+    let permit = BLOCKING_SEMAPHORE
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|e| DownloadError::Internal(e.to_string()))?;
+    let cancellation = CancelOnDrop(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+        false,
+    )));
+    let cancel = cancellation.0.clone();
     let zip_result = match tokio::task::spawn_blocking(move || {
-        zip(clean_file, &filename, compression_level, stored)
+        let _permit = permit;
+        zip(
+            CancellableReader(clean_file, cancel),
+            &filename,
+            compression_level,
+            stored,
+        )
     })
     .await
     {
@@ -467,8 +532,7 @@ pub async fn download_chain(
     }
 }
 
-/// Runs one mirror attempt under `attempt_timeout`. A timeout counts as a
-/// mirror failure so that the next mirror is tried.
+/// Fetch source bytes under the mirror budget; conversion is a separate stage.
 async fn attempt_chain(
     book: &std::sync::Arc<BookWithRemote>,
     file_type: &str,
@@ -478,16 +542,30 @@ async fn attempt_chain(
     limits: config::DownloadLimits,
     attempt_timeout: Duration,
 ) -> Result<DownloadResult, DownloadError> {
-    let fut = download_chain(
-        std::sync::Arc::clone(book),
-        file_type.to_string(),
-        source_config.clone(),
-        converting,
-        normalized,
-        limits,
-    );
-    match tokio::time::timeout(attempt_timeout, fut).await {
-        Ok(result) => result,
+    let fetch_type = if converting { "fb2" } else { file_type };
+    let fut = async {
+        let mut result = download_chain(
+            std::sync::Arc::clone(book),
+            fetch_type.to_string(),
+            source_config.clone(),
+            false,
+            normalized,
+            limits,
+        )
+        .await?;
+        if converting {
+            if let Data::Response(mut response) = result.data {
+                let (file, size) =
+                    response_to_tempfile(&mut response, limits.max_download_bytes, 5 * 1024 * 1024)
+                        .await?;
+                result.data = Data::SpooledTempFile(file);
+                result.data_size = size;
+            }
+        }
+        Ok::<_, DownloadError>(result)
+    };
+    let fetched = match tokio::time::timeout(attempt_timeout, fut).await {
+        Ok(result) => result?,
         Err(_) => {
             warn!(
                 source = %source_label(&source_config.url),
@@ -496,9 +574,48 @@ async fn attempt_chain(
                 converting,
                 "mirror attempt timed out"
             );
-            Err(DownloadError::SourceUnavailable)
+            return Err(DownloadError::SourceUnavailable);
         }
+    };
+    if !converting {
+        return Ok(fetched);
     }
+
+    let conversion = async {
+        let Data::SpooledTempFile(file) = fetched.data else {
+            return Err(DownloadError::Internal(
+                "conversion source was not buffered".into(),
+            ));
+        };
+        let mut response = convert_file(file, file_type.to_string()).await?;
+        let (file, size) = response_to_tempfile(
+            &mut response,
+            limits.max_download_bytes,
+            config::CONFIG.converted_response_spool_bytes,
+        )
+        .await
+        .map_err(|err| match err {
+            DownloadError::SourceUnavailable => DownloadError::ConverterUnavailable,
+            other => other,
+        })?;
+        let (filename, ascii) = filename_pair(book, file_type, false, normalized);
+        Ok(DownloadResult::new(
+            Data::SpooledTempFile(file),
+            filename,
+            ascii,
+            size,
+        ))
+    };
+    with_conversion_budget(config::CONFIG.converter_timeout, conversion).await
+}
+
+async fn with_conversion_budget<T>(
+    budget: Duration,
+    conversion: impl std::future::Future<Output = Result<T, DownloadError>>,
+) -> Result<T, DownloadError> {
+    tokio::time::timeout(budget, conversion)
+        .await
+        .map_err(|_| DownloadError::ConverterUnavailable)?
 }
 
 pub async fn start_download_futures(
@@ -533,8 +650,12 @@ pub async fn start_download_futures(
                 Err(err) if !err.is_mirror_failure() => return Err(err),
                 Err(err) => last_err = err,
             }
+        }
 
-            if can_convert {
+        // Exhaust direct formats before invoking the converter. Fetch the first
+        // usable FB2 source, and never retry a failed conversion on another mirror.
+        if can_convert {
+            for source_config in sources {
                 match attempt_chain(
                     &book,
                     &file_type,
@@ -696,15 +817,38 @@ mod tests {
         format!("http://{addr}")
     }
 
-    // `tracing::subscriber::set_default` installs a thread-local override, but the
-    // per-callsite `Interest` cache it relies on is process-global. When two tests
-    // each install their own custom subscriber and run concurrently, one thread can
-    // briefly observe the other's cached "not interested" decision for the same
-    // `warn!`/`error!` callsite and silently drop the log line — a rare, real flake,
-    // not a bug in `download_chain`. Serializing the handful of tests below removes
-    // that race without affecting the (much larger) set of tests that don't touch
-    // tracing's global subscriber state.
+    // Keep a single subscriber alive: temporary dispatchers can race with first
+    // use of the same callsite in ordinary parallel tests without a dispatcher.
+    // Route its output thread-locally instead of rebuilding global interest caches.
     static LOG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    thread_local! {
+        static LOG_CAPTURE: std::cell::RefCell<Option<CapturingWriter>> = const { std::cell::RefCell::new(None) };
+    }
+
+    struct CaptureGuard;
+    impl Drop for CaptureGuard {
+        fn drop(&mut self) {
+            LOG_CAPTURE.with(|capture| *capture.borrow_mut() = None);
+        }
+    }
+
+    fn capture_logs(writer: CapturingWriter) -> CaptureGuard {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            tracing::subscriber::set_global_default(
+                tracing_subscriber::fmt()
+                    .with_writer(|| {
+                        LOG_CAPTURE.with(|capture| capture.borrow().clone().unwrap_or_default())
+                    })
+                    .with_ansi(false)
+                    .finish(),
+            )
+            .unwrap();
+        });
+        LOG_CAPTURE.with(|capture| *capture.borrow_mut() = Some(writer));
+        CaptureGuard
+    }
 
     #[derive(Clone, Default)]
     struct CapturingWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
@@ -759,6 +903,83 @@ mod tests {
                 _ => None,
             }
         })
+    }
+
+    #[tokio::test]
+    async fn conversion_has_its_own_budget_and_timeout_is_not_a_mirror_failure() {
+        let mirror_budget = Duration::from_millis(5);
+        let conversion_budget = Duration::from_secs(1);
+        let result = with_conversion_budget(conversion_budget, async {
+            tokio::time::sleep(mirror_budget * 4).await;
+            Ok(42)
+        })
+        .await;
+        assert_eq!(result.unwrap(), 42);
+
+        let err = with_conversion_budget(
+            mirror_budget,
+            std::future::pending::<Result<(), DownloadError>>(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, DownloadError::ConverterUnavailable));
+        assert!(!err.is_mirror_failure());
+        for status in [422, 503] {
+            let err = with_conversion_budget(conversion_budget, async {
+                Err::<(), _>(crate::services::convert::converter_status_error(status))
+            })
+            .await
+            .unwrap_err();
+            assert!(!err.is_mirror_failure());
+            assert!(matches!(
+                err,
+                DownloadError::ConverterFailed(422) | DownloadError::ConverterUnavailable
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn unavailable_generic_format_is_not_fetched_or_mislabeled() {
+        for requested in ["pdf", "djvu", "txt", "html"] {
+            let result = download_chain(
+                std::sync::Arc::new(make_book("fb2")),
+                requested.to_string(),
+                make_source_config("http://127.0.0.1:1".to_string()),
+                false,
+                true,
+                generous_limits(),
+            )
+            .await;
+            assert!(matches!(
+                result,
+                Err(DownloadError::Library(
+                    super::super::book_library::error::BookLibraryError::NotFound
+                ))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn later_direct_format_wins_before_any_conversion_source_fetch() {
+        let (first, first_hits) =
+            spawn_counting_server(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec())
+                .await;
+        let (second, second_hits) = spawn_counting_server(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/epub+zip\r\nContent-Length: 4\r\n\r\nepub".to_vec(),
+        ).await;
+        let result = start_download_futures(
+            &make_book("fb2"),
+            "epub",
+            true,
+            &[make_source_config(first), make_source_config(second)],
+            generous_limits(),
+            Duration::from_secs(1),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(first_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(second_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -1071,13 +1292,9 @@ mod tests {
         let recorder = metrics_util::debugging::DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
         let capture = CapturingWriter::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(capture.clone())
-            .with_ansi(false)
-            .finish();
+        let _capture_guard = capture_logs(capture.clone());
 
         let (result, base_url) = metrics::with_local_recorder(&recorder, || {
-            let _guard = tracing::subscriber::set_default(subscriber);
             rt.block_on(async {
                 let response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
                 let base_url = spawn_raw_server(response.as_bytes().to_vec()).await;
@@ -1121,10 +1338,7 @@ mod tests {
         let recorder = metrics_util::debugging::DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
         let capture = CapturingWriter::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(capture.clone())
-            .with_ansi(false)
-            .finish();
+        let _capture_guard = capture_logs(capture.clone());
 
         // Bind then immediately drop the listener so the port is guaranteed to refuse
         // connections — a stable way to trigger a connect-level request_error deterministically.
@@ -1136,7 +1350,6 @@ mod tests {
         });
 
         let result = metrics::with_local_recorder(&recorder, || {
-            let _guard = tracing::subscriber::set_default(subscriber);
             rt.block_on(async {
                 let source_config = make_source_config(dead_url.clone());
                 download(1, "fb2", &source_config).await
@@ -1172,13 +1385,9 @@ mod tests {
             .build()
             .unwrap();
         let capture = CapturingWriter::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(capture.clone())
-            .with_ansi(false)
-            .finish();
+        let _capture_guard = capture_logs(capture.clone());
 
         let result = {
-            let _guard = tracing::subscriber::set_default(subscriber);
             rt.block_on(async {
                 let body = b"this is not a zip file";
                 let response = format!(
