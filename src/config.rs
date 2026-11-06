@@ -199,7 +199,16 @@ fn mirror_redirect_allowed(original: &Url, target: &Url, allowed: &HashSet<Strin
     {
         return false;
     }
-    original.host_str() == Some(host)
+    let Some(origin) = original.host_str() else {
+        return false;
+    };
+    // Same host, or a subdomain of it (e.g. flibusta.is -> static.flibusta.is).
+    // Never a parent domain or an unrelated host sharing a suffix.
+    host == origin
+        || (origin.parse::<IpAddr>().is_err()
+            && host
+                .strip_suffix(origin)
+                .is_some_and(|prefix| prefix.ends_with('.') && prefix.len() > 1))
 }
 
 fn mirror_redirect_policy(allowed: HashSet<String>) -> reqwest::redirect::Policy {
@@ -439,6 +448,7 @@ mod tests {
         for target in [
             "https://mirror.example/new",
             "http://mirror.example:8080/new",
+            "http://static.mirror.example:443/b.usr/book.pdf",
         ] {
             assert!(mirror_redirect_allowed(
                 &original,
@@ -449,6 +459,8 @@ mod tests {
         for target in [
             "https://other.example/book",
             "https://mirror.example.evil/book",
+            "https://evilmirror.example/book",
+            "https://example/book",
             "http://books_archive/book",
             "file:///etc/passwd",
         ] {

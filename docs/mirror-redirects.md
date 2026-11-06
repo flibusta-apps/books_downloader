@@ -1,7 +1,8 @@
 # Mirror redirects
 
 Mirror HTTP clients follow at most five redirects. Each target must have the
-original request's host or an exact host in `MIRROR_REDIRECT_ALLOWED_HOSTS`.
+original request's host, a subdomain of it (e.g. `flibusta.is` ->
+`static.flibusta.is`), or an exact host in `MIRROR_REDIRECT_ALLOWED_HOSTS`.
 The optional environment variable is a comma-separated list of hosts (not URLs,
 ports, or wildcard patterns), for example `cdn.example.org,archive.internal`.
 IPv6 literals may use brackets. The default allowlist is empty.
