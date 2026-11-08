@@ -79,6 +79,46 @@ mod tests {
     use tokio::net::TcpListener;
 
     #[tokio::test]
+    async fn query_encoding_and_authorization_reach_upstream() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut buf = [0; 1024];
+                let n = socket.read(&mut buf).await.unwrap();
+                assert_ne!(n, 0);
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request = String::from_utf8(request).unwrap();
+            assert!(request
+                .starts_with("GET /books?existing=1&search=a+%26+b&lang=ru&lang=en HTTP/1.1\r\n"));
+            assert!(request
+                .to_ascii_lowercase()
+                .contains("\r\nauthorization: test-key\r\n"));
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: application/json\r\n\r\n{}").await.unwrap();
+        });
+        let result: serde_json::Value = _make_request(
+            &reqwest::Client::new(),
+            &format!("http://{addr}/books?existing=1"),
+            "test-key",
+            vec![
+                ("search", "a & b".into()),
+                ("lang", "ru".into()),
+                ("lang", "en".into()),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, serde_json::json!({}));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn stalled_server_times_out_quickly() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
